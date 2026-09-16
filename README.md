@@ -9,7 +9,7 @@ Backend Java 21 / Spring Boot 3.5 con seis servicios independientes y PostgreSQL
 - Un proceso y una base lógica PostgreSQL por servicio. REST y OpenFeign para la primera etapa; los eventos RabbitMQ quedan como evolución futura.
 - Capas `domain`, `application`, `infrastructure` y `adapters` en cada servicio.
 - JWT HS256 de 15 minutos; refresh token aleatorio de 30 días, almacenado como SHA-256 y rotado en cada uso. Los servicios internos usan un token separado en red privada.
-- Integraciones de pago implementadas con proveedor `MANUAL` y confirmación de administrador. Los adaptadores Mercado Pago y Culqi requieren cuentas, credenciales y webhooks para completarse.
+- Integraciones de pago usan el puerto `PaymentProvider`; el adaptador operativo `MANUAL` exige confirmación de administrador. Los adaptadores Mercado Pago y Culqi requieren cuentas, credenciales y webhooks para completarse.
 - Proveedores: importación de feed CSV oficial por HTTPS con lista de hosts permitidos, límite de frecuencia, reintentos e historial. No se rastrean páginas HTML arbitrarias.
 - SUNAT: generación de XML UBL 2.1, firma XMLDSig con PKCS#12 externo, envío SOAP `sendBill`, almacenamiento de CDR. **No está homologado**: faltan validaciones tributarias completas, catálogos SUNAT, referencias de notas y pruebas con certificados/casos oficiales. No usar para emisión real hasta completar homologación.
 
