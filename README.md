@@ -49,6 +49,8 @@ Para desarrollo sin contenedores: crear las seis bases con `infra/postgres/init.
 
 Configurar `SUPPLIER_ALLOWED_HOSTS=proveedor.example,otro.example`. El feed debe ser UTF-8, separado por punto y coma y tener cabecera exacta `sku;name;price;stock;imageUrl;brand;category`. Alta: `POST /api/suppliers`; ejecución manual: `POST /api/suppliers/{id}/run`. El importador actual no admite campos CSV entrecomillados con punto y coma. Debe adaptarse al formato contractual de cada proveedor antes de usarlo en producción.
 
+La evaluación de la tienda SEGO está en [docs/suppliers/SEGO.md](docs/suppliers/SEGO.md). Su web pública no ofrece precio ni stock confiable a visitantes, por lo que todavía no se configura como fuente del sincronizador.
+
 ## SUNAT
 
 Colocar el archivo PKCS#12 fuera del código y definir `SUNAT_CERTIFICATE_PATH=/run/secrets/sunat/certificado.p12`, `SUNAT_CERTIFICATE_PASSWORD`, `SUNAT_RUC`, `SUNAT_SOL_USER`, `SUNAT_SOL_PASSWORD` y `SUNAT_ENDPOINT`. El `SUNAT_ENDPOINT` de ejemplo corresponde a beta. La tabla `invoice` guarda estado y error; `xml_document` guarda XML original y firmado; `cdr_response` guarda el ZIP CDR codificado en Base64 y respuesta. Los estados son `DRAFT`, `ACCEPTED`, `REJECTED`, `FAILED`.
