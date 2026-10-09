@@ -5,11 +5,40 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: testing-root-password
+          MARIADB_DATABASE: commerce_test
+          MARIADB_USER: syscon
+          MARIADB_PASSWORD: testing-password
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: shivammathur/setup-php@v2
         with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-      - run: mvn -B verify
+          php-version: "8.4"
+          extensions: bcmath, dom, mbstring, pdo_mysql, pdo_sqlite, zip
+          tools: composer:v2
+          coverage: none
+      - run: composer install --prefer-dist --no-interaction
+      - run: composer validate --strict
+      - run: vendor/bin/pint --test
+      - run: php artisan test
+      - run: php artisan test
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: commerce_test
+          DB_USERNAME: syscon
+          DB_PASSWORD: testing-password
+      - run: bash bin/build-hostinger.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syscon-hostinger
+          path: dist/syscon-hostinger.zip

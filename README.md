@@ -1,72 +1,113 @@
 # SYSCON Commerce Platform
 
-Backend Java 21 / Spring Boot 3.5 con seis servicios independientes y PostgreSQL. El repositorio oficial estaba vacío al iniciar este trabajo.
+API de comercio en **PHP 8.4 / Laravel 13**, organizada en una aplicación modular con MySQL/MariaDB para hosting compartido de Hostinger. Sustituye los seis servicios Java; no requiere Maven, JVM, Node ni un frontend para funcionar.
 
-## Propuesta técnica y estado inicial
+Los módulos en `app/Modules` son Auth, Catalog, Orders, Payments, Suppliers e Invoices. Cada uno conserva las rutas públicas de la API anterior. Los módulos comparten una base de datos y coordinan pedidos, inventario y pagos mediante transacciones.
 
-- Repositorio: `main` sin commits, sin Maven, documentación ni código previo.
-- Monorepo Maven para compartir contratos HTTP y seguridad transversal sin compartir entidades de negocio.
-- Un proceso y una base lógica PostgreSQL por servicio. REST y OpenFeign para la primera etapa; los eventos RabbitMQ quedan como evolución futura.
-- Capas `domain`, `application`, `infrastructure` y `adapters` en cada servicio.
-- JWT HS256 de 15 minutos; refresh token aleatorio de 30 días, almacenado como SHA-256 y rotado en cada uso. Los servicios internos usan un token separado en red privada.
-- Integraciones de pago usan el puerto `PaymentProvider`; el adaptador operativo `MANUAL` exige confirmación de administrador. Los adaptadores Mercado Pago y Culqi requieren cuentas, credenciales y webhooks para completarse.
-- Proveedores: importación de feed CSV oficial por HTTPS con lista de hosts permitidos, límite de frecuencia, reintentos e historial. No se rastrean páginas HTML arbitrarias.
-- SUNAT: generación de XML UBL 2.1, firma XMLDSig con PKCS#12 externo, envío SOAP `sendBill`, almacenamiento de CDR. **No está homologado**: faltan validaciones tributarias completas, catálogos SUNAT, referencias de notas y pruebas con certificados/casos oficiales. No usar para emisión real hasta completar homologación.
+## Desarrollo local
 
-## Servicios
+Requisitos: PHP 8.4 con BCMath, DOM, cURL, Mbstring, OpenSSL, PDO MySQL/SQLite y ZIP; Composer 2.
 
-| Servicio | Puerto local | Funciones |
-| --- | ---: | --- |
-| Auth | 8081 | Registro, login, refresh, logout, usuarios/roles/permisos |
-| Catalog | 8082 | Productos, categorías, marcas, inventario, importación interna |
-| Supplier | 8083 | Proveedores, feed CSV, trabajos e historial |
-| Orders | 8084 | Pedidos, detalles y transiciones |
-| Payment | 8085 | Pago manual y confirmación administrativa |
-| Invoice | 8086 | Borradores, XML, firma, envío y CDR SUNAT |
+```bash
+composer install
+php artisan commerce:configure --sqlite
+php artisan migrate --seed
+php artisan serve
+```
 
-Cada servicio publica `/v3/api-docs` y `/swagger-ui.html`. Las respuestas siguen `{ "success": true, "message": "...", "data": ... }`.
+La API queda en http://localhost:8000, Swagger en http://localhost:8000/swagger-ui.html y el documento OpenAPI en `/v3/api-docs`. Swagger carga sus recursos desde jsDelivr. `/up` es el endpoint de salud del proceso.
 
-## Ejecución local
+`commerce:configure` crea `.env` y genera APP_KEY, JWT_SECRET, SERVICE_TOKEN y ADMIN_PASSWORD **solo si están vacíos**. Las credenciales administrativas están en el archivo local `.env`, excluido de Git. El comando `--sqlite` configura una base SQLite para desarrollo; MySQL/MariaDB con InnoDB es la base prevista para despliegue y concurrencia.
 
-1. Copiar `.env.example` a `.env` y reemplazar todas las contraseñas y tokens. `JWT_SECRET` debe tener al menos 32 bytes aleatorios; `SERVICE_TOKEN` debe ser distinto.
-2. Ejecutar `docker compose --env-file .env up --build -d`.
-3. Usar los endpoints `/api/...` a través de Nginx en `http://localhost`.
+Para trabajar con MySQL/MariaDB local, omite `--sqlite` y configura DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME y DB_PASSWORD antes de ejecutar las migraciones. El comando no inventa una contraseña de base de datos: usa la que corresponde a tu servidor o a hPanel.
 
-El usuario administrador se crea al arrancar Auth con `ADMIN_EMAIL` y `ADMIN_PASSWORD` (mínimo 16 caracteres). Registros públicos reciben rol `CUSTOMER`. No se exponen puertos PostgreSQL ni Redis.
+## Despliegue en Hostinger compartido
 
-Para desarrollo sin contenedores: crear las seis bases con `infra/postgres/init.sql`, exportar `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET` y `SERVICE_TOKEN`, y ejecutar cada módulo con Maven. `mvn verify` compila y ejecuta pruebas.
+El proyecto funciona directamente con PHP 8.4, MySQL/MariaDB, el servidor web del hosting y un cron de hPanel. Las colas usan `sync` y la sincronización programada se ejecuta dentro del proceso PHP.
 
-## Flujo básico
+Genera un paquete de producción con dependencias sin herramientas de desarrollo:
 
-1. `POST /api/auth/register`, luego `POST /api/auth/login`.
-2. Admin publica catálogo con `POST /api/catalog/products`.
-3. Cliente crea `POST /api/orders` con `items: [{"productId":"UUID","quantity":1}]`.
-4. Cliente crea `POST /api/payments` con `orderId` y `provider: "MANUAL"`.
-5. Admin confirma `POST /api/payments/{id}/confirm` con `reference`; el pedido pasa a `PAID`.
-6. Admin crea `POST /api/invoices` y envía `POST /api/invoices/{id}/submit` solo tras configurar credenciales SUNAT.
+```bash
+bash bin/build-hostinger.sh
+```
+
+En NixOS:
+
+```bash
+nix shell nixpkgs#php84 nixpkgs#php84Packages.composer -c bash bin/build-hostinger.sh
+```
+
+El resultado es `dist/syscon-hostinger.zip`, con `syscon/` (aplicación privada) y `public_html/` (archivos públicos). Excluye el .env local, bases SQLite, certificados y archivos subidos localmente. El paquete incluye `.env.example` con la configuración de producción; configura sus valores en el servidor.
+
+Sigue la [guía de Hostinger](docs/deployment/HOSTINGER.md) para subirlo, configurar PHP/base de datos, ejecutar migraciones y crear el cron. CI también genera este paquete como artefacto descargable.
+
+## API y seguridad
+
+Respuestas: `{"success":true,"message":"...","data":...}`. Los errores mantienen el mismo envoltorio; la validación usa HTTP 422. UUID para entidades. Importes en PEN como **cadenas decimales de dos posiciones**, para conservar precisión. Este formato monetario es un cambio frente a los números JSON de Java.
+
+- Auth: `POST /api/auth/register|login|refresh|logout`, `GET /api/auth/me`. JWT HS256 por 15 minutos, refresh por 30 días almacenado como SHA-256 y rotado bajo bloqueo. Logout revoca el refresh; el JWT existente expira a los 15 minutos. Registro público siempre CUSTOMER.
+- Catalog: `GET /api/catalog/products[/{id}]`, `categories`, `brands`; ADMIN crea/actualiza productos por SKU con `POST products`.
+- Orders: `GET|POST /api/orders`, `GET /api/orders/{id}`; ADMIN cambia estados con `PATCH /api/orders/{id}/status/{status}`.
+- Payments: `POST /api/payments`, `GET /api/payments/{id}`; ADMIN confirma con `POST /api/payments/{id}/confirm` y `reference`.
+- Suppliers: ADMIN usa `GET|POST /api/suppliers`, `POST /{id}/run`, `GET /jobs`, `GET /jobs/{id}/history`.
+- Invoices: ADMIN usa `POST /api/invoices`, `GET /{id}`, `POST /{id}/submit`.
+
+Los clientes acceden únicamente a sus pedidos y pagos. ADMIN tiene los permisos del sistema original. Las operaciones internas de catálogo y pedidos conservan `X-Service-Token`; en esta arquitectura los módulos llaman directamente a sus servicios PHP, sin HTTP entre procesos. Mantén JWT_SECRET y SERVICE_TOKEN distintos y con al menos 32 caracteres.
+
+Ejemplo de flujo:
+
+1. Registrar cliente y hacer login.
+2. Con ADMIN, publicar un producto con sku, name, price, stock y active.
+3. Con cliente, crear pedido: `{"items":[{"productId":"UUID","quantity":2}]}`.
+4. Crear pago: `{"orderId":"UUID","provider":"MANUAL"}`.
+5. ADMIN confirma el pago: `{"reference":"BANCO-001"}`.
+6. Crear borrador de comprobante y, con credenciales de pruebas, enviarlo a SUNAT.
+
+## Inventario y pagos
+
+Crear un pedido reserva unidades mediante bloqueos de fila en orden estable. El stock público muestra unidades disponibles, descontando reservas. Confirmar pago consume la reserva y descuenta stock físico en la misma transacción; cancelar un pedido pendiente libera su reserva. Una importación o edición no puede reducir stock físico por debajo de las reservas existentes.
+
+Estados: PAYMENT_PENDING → PAID → PROCESSING → SHIPPED → DELIVERED. CANCELLED solo desde PAYMENT_PENDING. PAID se asigna al confirmar pago, no mediante el cambio administrativo de estado. La creación de pago y su confirmación son idempotentes.
+
+El adaptador operativo es MANUAL. Mercado Pago y Culqi continúan pendientes de integración con credenciales, webhooks verificables e idempotencia. Las reservas pendientes no tienen vencimiento automático; el administrador debe cancelarlas cuando corresponda.
 
 ## Proveedores
 
-Configurar `SUPPLIER_ALLOWED_HOSTS=proveedor.example,otro.example`. El feed debe ser UTF-8, separado por punto y coma y tener cabecera exacta `sku;name;price;stock;imageUrl;brand;category`. Alta: `POST /api/suppliers`; ejecución manual: `POST /api/suppliers/{id}/run`. El importador actual no admite campos CSV entrecomillados con punto y coma. Debe adaptarse al formato contractual de cada proveedor antes de usarlo en producción.
+Configura SUPPLIER_ALLOWED_HOSTS con los hosts exactos de los feeds contractuales. Solo HTTPS, sin credenciales en URL ni redirecciones, con timeout, reintentos y límite de 5 MB. El intervalo mínimo es 15 minutos; el scheduler ejecuta `suppliers:sync` cada 15 minutos. En Hostinger configura un cron para `php artisan schedule:run`; el callback del scheduler llama a Artisan dentro del mismo proceso, sin depender de `proc_open`.
 
-La evaluación de la tienda SEGO está en [docs/suppliers/SEGO.md](docs/suppliers/SEGO.md). Su web pública no ofrece precio ni stock confiable a visitantes, por lo que todavía no se configura como fuente del sincronizador.
+Formato UTF-8, separado por punto y coma:
+
+```text
+sku;name;price;stock;imageUrl;brand;category
+SKU-1;"Producto; especial";10.15;5;https://proveedor.example/image.jpg;Marca;Categoría
+```
+
+Admite campos CSV entrecomillados. El feed completo se valida y aplica transaccionalmente: una fila inválida revierte toda la importación. Cada ejecución conserva resultado e historial. El stock del feed se interpreta como stock físico total, antes de descontar reservas; revisa que el contrato del proveedor tenga esa semántica.
+
+La evaluación de [SEGO](docs/suppliers/SEGO.md) se conserva. No se configura scraping de su web pública.
 
 ## SUNAT
 
-Colocar el archivo PKCS#12 fuera del código y definir `SUNAT_CERTIFICATE_PATH=/run/secrets/sunat/certificado.p12`, `SUNAT_CERTIFICATE_PASSWORD`, `SUNAT_RUC`, `SUNAT_SOL_USER`, `SUNAT_SOL_PASSWORD` y `SUNAT_ENDPOINT`. El `SUNAT_ENDPOINT` de ejemplo corresponde a beta. La tabla `invoice` guarda estado y error; `xml_document` guarda XML original y firmado; `cdr_response` guarda el ZIP CDR codificado en Base64 y respuesta. Los estados son `DRAFT`, `ACCEPTED`, `REJECTED`, `FAILED`.
+Se conservan borradores UBL 2.1, firma XMLDSig RSA-SHA256 con PKCS#12, envío SOAP sendBill y lectura/persistencia de ZIP CDR. Configura SUNAT_RUC, SUNAT_LEGAL_NAME, SUNAT_SOL_USER, SUNAT_SOL_PASSWORD, SUNAT_CERTIFICATE_PATH y SUNAT_CERTIFICATE_PASSWORD. En Hostinger, guarda el certificado en `syscon/certificates/`, fuera de `public_html`, y configura SUNAT_CERTIFICATE_PATH con su ruta absoluta.
 
-## Operación y límites actuales
+Tipos: 01 factura, 03 boleta, 07 nota de crédito, 08 nota de débito. Las notas requieren un comprobante original ACCEPTED del mismo pedido. Estados: DRAFT, ACCEPTED, REJECTED, FAILED.
 
-- Hibernate `ddl-auto: update` facilita el primer arranque, pero antes de producción debe sustituirse por migraciones Flyway versionadas.
-- El stock se verifica al crear pedido, pero aún no existe reserva atómica ni liberación por cancelación. No aceptar ventas concurrentes reales hasta implementar esta coordinación.
-- La confirmación de pago manual exige rol `ADMIN`; los webhooks de pasarelas necesitan verificación criptográfica e idempotencia propias.
-- El importador de proveedores se ejecuta manualmente o por sondeo cada 15 minutos; falta observabilidad avanzada y ejecución distribuida segura para varias réplicas.
-- El reverse proxy incluido escucha HTTP para desarrollo. En VPS se debe terminar TLS con un certificado válido y bloquear acceso directo a servicios. No exponer este Compose directamente a Internet sin configurar HTTPS, copias de seguridad y política de secretos.
-- Para HTTPS en VPS, colocar `fullchain.pem` y `privkey.pem` en `infra/tls/` (directorio ignorado por Git) y ejecutar `docker compose -f compose.yml -f compose.prod.yml --env-file .env up --build -d`. El proxy redirige HTTP a HTTPS. Configurar renovación externa de certificados y reiniciar Nginx después de renovarlos.
-- RabbitMQ, outbox, cobertura de integración para todos los servicios y auditoría de negocio persistida son trabajo pendiente antes de la operación empresarial. Actualmente hay pruebas unitarias y una prueba de catálogo con PostgreSQL/Testcontainers; cada petición API registra actor, operación y estado en logs.
+**La implementación conserva el carácter experimental del backend anterior: no está homologada.** Faltan validaciones tributarias completas, catálogos, cálculo/desglose de impuestos, referencias y motivos completos de notas y pruebas oficiales. La prueba criptográfica valida la firma, no la aceptación tributaria. Los envíos con timeout deben conciliarse con SUNAT antes de reintentar; una respuesta perdida no significa que SUNAT no recibió el documento.
 
-En un VPS Ubuntu/Hostinger: instalar Docker Engine y Compose, apuntar el dominio al VPS, abrir solo los puertos 80/443 en el firewall y mantener PostgreSQL/Redis sin puertos públicos. Guardar `.env` con permisos restringidos y respaldar periódicamente el volumen `pgdata`. El JWT HS256 y el token interno son secretos compartidos entre procesos; para varias organizaciones/equipos conviene pasar a firma asimétrica, rotación de claves y credenciales internas por servicio.
+## Migración desde Java
 
-## Fuentes de versiones
+Se retiraron Java, Maven, Feign, las seis bases lógicas y el proxy entre servicios. El commit anterior conserva ese código en Git.
 
-Spring Boot 3.5.16 fue publicado por [Spring](https://spring.io/blog/2026/06/25/spring-boot-3-5-16-available-now/). La [matriz de Spring Cloud](https://spring.io/projects/spring-cloud/) indica compatibilidad de la serie 2025.0 con Boot 3.5. Para OpenAPI se usa la línea [springdoc 2.8](https://springdoc.org/v2/). Para completar y homologar comprobantes, contrastar cada XML con las [guías oficiales SUNAT UBL 2.1](https://cpe.sunat.gob.pe/guias-y-manuales) y probarlo en el [servicio beta SUNAT](https://cpe.sunat.gob.pe/noticias/servicio-beta-para-realizar-pruebas-ubl-21).
+Esta migración prepara un **esquema nuevo**. No transforma automáticamente datos de una instalación Java existente. Antes de sustituir una instalación con datos, exporta las seis bases y prepara una importación que preserve UUID, contraseñas BCrypt, estados y referencias; luego concilia inventario antes de habilitar reservas. Los refresh tokens anteriores requieren iniciar sesión nuevamente. No borres los volúmenes anteriores.
+
+## Validación
+
+```bash
+composer validate --strict
+vendor/bin/pint --test
+php artisan test
+```
+
+La suite cubre autenticación/rotación, autorización y propiedad, reservas/cancelaciones, pagos repetidos, rollback de importación CSV, borradores/envíos SUNAT y verificación criptográfica de firma. CI ejecuta las pruebas con SQLite y MariaDB; en MariaDB también verifica que dos procesos simultáneos no reserven la misma última unidad.
+
+Referencias: [Laravel 13](https://laravel.com/docs/13.x), [Swagger UI](https://github.com/swagger-api/swagger-ui), [guías oficiales SUNAT](https://cpe.sunat.gob.pe/guias-y-manuales).
