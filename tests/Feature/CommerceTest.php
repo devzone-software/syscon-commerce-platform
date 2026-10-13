@@ -40,12 +40,15 @@ class CommerceTest extends TestCase
     /** Boleta con DNI: el bloque de facturación que exige la creación de pedidos. */
     private const BILLING = ['type' => '03', 'documentType' => '1', 'documentNumber' => '12345678', 'name' => 'Ana Quispe'];
 
+    /** Retiro en tienda: la entrega más simple que acepta la creación de pedidos. */
+    private const PICKUP = ['method' => 'PICKUP', 'contactName' => 'Ana Quispe', 'contactPhone' => '987654321'];
+
     /** RUC con dígito verificador válido (módulo 11). */
     private const RUC = '20123456786';
 
-    private function order(array $headers, array $product, int $quantity = 2, array $billing = self::BILLING): array
+    private function order(array $headers, array $product, int $quantity = 2, array $billing = self::BILLING, array $delivery = self::PICKUP): array
     {
-        return $this->postJson('/api/orders', ['items' => [['productId' => $product['id'], 'quantity' => $quantity]], 'billing' => $billing], $headers)->assertOk()->json('data');
+        return $this->postJson('/api/orders', ['items' => [['productId' => $product['id'], 'quantity' => $quantity]], 'billing' => $billing, 'delivery' => $delivery], $headers)->assertOk()->json('data');
     }
 
     private function paidOrder(): array
@@ -134,7 +137,7 @@ class CommerceTest extends TestCase
         $p = $this->product(2);
         $o = $this->order($h, $p);
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 0);
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING], $this->token())->assertConflict();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP], $this->token())->assertConflict();
         $admin = $this->token('ADMIN');
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertOk();
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 2);
@@ -146,10 +149,10 @@ class CommerceTest extends TestCase
         $h = $this->token();
         $p = $this->product();
         $other = $this->product(0, 'SKU-2');
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $other['id'], 'quantity' => 1]], 'billing' => self::BILLING], $h)->assertConflict();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $other['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP], $h)->assertConflict();
         $this->assertDatabaseHas('products', ['id' => $p['id'], 'reserved' => 0]);
         $this->assertDatabaseCount('orders', 0);
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING], $h)->assertUnprocessable();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP], $h)->assertUnprocessable();
     }
 
     public function test_payment_ownership_confirmation_idempotency_and_transitions(): void
@@ -224,7 +227,7 @@ class CommerceTest extends TestCase
         $h = $this->token();
         $p = $this->product(10);
         $items = [['productId' => $p['id'], 'quantity' => 1]];
-        $this->postJson('/api/orders', ['items' => $items], $h)->assertUnprocessable()->assertJsonPath('success', false);
+        $this->postJson('/api/orders', ['items' => $items, 'delivery' => self::PICKUP], $h)->assertUnprocessable()->assertJsonPath('success', false);
         $invalid = [
             ['documentNumber' => '1234567'] + self::BILLING,
             ['type' => '01', 'documentType' => '1'] + self::BILLING,
@@ -234,7 +237,7 @@ class CommerceTest extends TestCase
             ['type' => '07'] + self::BILLING,
         ];
         foreach ($invalid as $billing) {
-            $this->postJson('/api/orders', ['items' => $items, 'billing' => $billing], $h)->assertUnprocessable();
+            $this->postJson('/api/orders', ['items' => $items, 'billing' => $billing, 'delivery' => self::PICKUP], $h)->assertUnprocessable();
         }
         $this->assertDatabaseCount('orders', 0);
         $this->assertDatabaseHas('products', ['id' => $p['id'], 'reserved' => 0]);
@@ -247,6 +250,74 @@ class CommerceTest extends TestCase
         // Se guarda en el propio pedido (no se lee del perfil), así que cambios posteriores del perfil no la alteran.
         $this->assertDatabaseHas('orders', ['id' => $o['id'], 'billing_document_number' => self::RUC]);
         $this->assertNull($this->order($h, $p, 1, ['address' => ''] + self::BILLING)['billing']['address']);
+    }
+
+    public function test_delivery_cost_is_set_by_server_and_included_in_total(): void
+    {
+        config(['commerce.delivery.fee' => '', 'commerce.delivery.pickup_address' => 'Av. Principal 100, Lima']);
+        $h = $this->token();
+        $p = $this->product(10);
+        $items = [['productId' => $p['id'], 'quantity' => 2]];
+        $home = ['method' => 'DELIVERY', 'contactName' => 'Ana Quispe', 'contactPhone' => '987 654 321', 'address' => 'Jr. Las Flores 245', 'district' => 'Miraflores', 'reference' => 'Frente al parque', 'cost' => '0.01'];
+        $this->getJson('/api/orders/delivery-options')->assertOk()->assertJsonPath('data.delivery.enabled', false)->assertJsonPath('data.pickup.address', 'Av. Principal 100, Lima');
+        // Sin tarifa configurada el envío no está disponible.
+        $this->postJson('/api/orders', ['items' => $items, 'billing' => self::BILLING, 'delivery' => $home], $h)->assertUnprocessable();
+        $this->postJson('/api/orders', ['items' => $items, 'billing' => self::BILLING], $h)->assertUnprocessable();
+        foreach ([['contactPhone' => '12345'] + self::PICKUP, ['address' => ''] + $home, ['district' => null] + $home, ['method' => 'DRONE'] + self::PICKUP] as $delivery) {
+            config(['commerce.delivery.fee' => '15']);
+            $this->postJson('/api/orders', ['items' => $items, 'billing' => self::BILLING, 'delivery' => $delivery], $h)->assertUnprocessable();
+        }
+        $this->assertDatabaseCount('orders', 0);
+
+        config(['commerce.delivery.fee' => '15']);
+        $this->getJson('/api/orders/delivery-options')->assertOk()->assertJsonPath('data.delivery.cost', '15.00');
+        // El costo enviado por el cliente se ignora: lo fija el servidor.
+        $o = $this->order($h, $p, 2, self::BILLING, $home);
+        $this->assertSame(['20.30', '15.00', '35.30'], [$o['subtotal'], $o['delivery']['cost'], $o['total']]);
+        $this->assertSame(['DELIVERY', '987654321', 'Jr. Las Flores 245', 'Miraflores'], [$o['delivery']['method'], $o['delivery']['contactPhone'], $o['delivery']['address'], $o['delivery']['district']]);
+        $payment = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
+        $this->assertSame('35.30', $payment['amount']);
+
+        // Retirar en tienda es gratis y no guarda dirección aunque llegue una.
+        $pickup = $this->order($h, $p, 1, self::BILLING, ['address' => 'Jr. Las Flores 245', 'district' => 'Miraflores'] + self::PICKUP);
+        $this->assertSame(['10.15', '0.00', null], [$pickup['total'], $pickup['delivery']['cost'], $pickup['delivery']['address']]);
+    }
+
+    public function test_idempotency_key_returns_the_same_order_without_reserving_twice(): void
+    {
+        $h = $this->token();
+        $p = $this->product(5);
+        $key = (string) Str::uuid();
+        $body = ['items' => [['productId' => $p['id'], 'quantity' => 2]], 'billing' => self::BILLING, 'delivery' => self::PICKUP, 'idempotencyKey' => $key];
+        $first = $this->postJson('/api/orders', $body, $h)->assertOk()->assertJsonPath('message', 'Pedido creado')->json('data');
+        $again = $this->postJson('/api/orders', $body, $h)->assertOk()->assertJsonPath('message', 'Pedido ya registrado')->json('data');
+        $this->assertSame($first, $again);
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseHas('products', ['id' => $p['id'], 'reserved' => 2]);
+        // La misma clave con otro contenido no crea otro pedido.
+        $body['items'][0]['quantity'] = 1;
+        $this->postJson('/api/orders', $body, $h)->assertUnprocessable();
+        // Las claves son por cliente; otro cliente puede usar la misma.
+        $this->postJson('/api/orders', $body, $this->token())->assertOk();
+        $this->assertDatabaseCount('orders', 2);
+        $this->postJson('/api/orders', ['idempotencyKey' => 'no-uuid'] + $body, $h)->assertUnprocessable();
+    }
+
+    public function test_invoice_xml_lists_delivery_so_lines_match_the_total(): void
+    {
+        config(['commerce.delivery.fee' => '12.50']);
+        $h = $this->token();
+        $admin = $this->token('ADMIN');
+        $o = $this->order($h, $this->product(), 1, self::BILLING, ['method' => 'DELIVERY', 'address' => 'Jr. Las Flores 245', 'district' => 'Miraflores'] + self::PICKUP);
+        app(OrderService::class)->transition($o['id'], 'PAID');
+        $invoice = $this->postJson('/api/invoices', ['orderId' => $o['id'], 'type' => '03', 'serialNumber' => 'B001-5'], $admin)->assertOk()->json('data');
+        $xml = DB::table('xml_documents')->where('invoice_id', $invoice['id'])->value('generated_xml');
+        $doc = new \DOMDocument;
+        $doc->loadXML($xml);
+        $lines = array_map(fn ($n) => $n->textContent, iterator_to_array($doc->getElementsByTagName('LineExtensionAmount')));
+        $this->assertSame(['10.15', '12.50'], $lines);
+        $this->assertSame('22.65', $doc->getElementsByTagName('PayableAmount')->item(0)->textContent);
+        $this->assertStringContainsString('Servicio de envío a domicilio', $xml);
     }
 
     public function test_profile_returns_registered_identity(): void

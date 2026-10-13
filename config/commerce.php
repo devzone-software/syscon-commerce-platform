@@ -4,6 +4,11 @@ return [
     'jwt_secret' => env('JWT_SECRET', ''), 'service_token' => env('SERVICE_TOKEN', ''),
     'supplier_hosts' => array_filter(array_map('trim', explode(',', strtolower(env('SUPPLIER_ALLOWED_HOSTS', ''))))),
     'admin_email' => env('ADMIN_EMAIL'), 'admin_password' => env('ADMIN_PASSWORD'),
+    // Entrega: el retiro en tienda es gratuito; el envío a domicilio solo se ofrece con DELIVERY_FEE.
+    'delivery' => [
+        'pickup_address' => env('PICKUP_ADDRESS', ''), 'pickup_hours' => env('PICKUP_HOURS', ''),
+        'fee' => env('DELIVERY_FEE', ''), 'areas' => env('DELIVERY_AREAS', ''),
+    ],
     'sunat' => [
         'ruc' => env('SUNAT_RUC', ''), 'legal_name' => env('SUNAT_LEGAL_NAME', 'SYSCON'),
         'user' => env('SUNAT_SOL_USER', ''), 'password' => env('SUNAT_SOL_PASSWORD', ''),
