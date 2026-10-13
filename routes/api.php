@@ -15,6 +15,7 @@ Route::prefix('auth')->controller(AuthController::class)->group(function () {
     Route::post('refresh', 'refresh')->middleware('throttle:30,1');
     Route::post('logout', 'logout')->middleware('throttle:30,1');
     Route::get('me', 'me')->middleware('jwt');
+    Route::get('profile', 'profile')->middleware('jwt');
 });
 Route::prefix('catalog')->controller(CatalogController::class)->group(function () {
     Route::get('products', 'index');

@@ -5,6 +5,7 @@ namespace App\Modules\Orders;
 use App\Support\Api;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 class OrderController
 {
@@ -12,9 +13,13 @@ class OrderController
 
     public function store(Request $r)
     {
-        $data = $r->validate(['items' => 'required|array|min:1|max:100', 'items.*.productId' => 'required|uuid|distinct', 'items.*.quantity' => 'required|integer|min:1|max:1000000']);
+        $input = $r->all();
+        $input['billing'] = is_array($input['billing'] ?? null) ? BillingData::normalize($input['billing']) : ($input['billing'] ?? null);
+        $validator = Validator::make($input, ['items' => 'required|array|min:1|max:100', 'items.*.productId' => 'required|uuid|distinct', 'items.*.quantity' => 'required|integer|min:1|max:1000000', 'billing' => 'required|array'] + BillingData::rules('billing.'));
+        $validator->after(fn ($v) => is_array($input['billing']) && BillingData::check($v, $input['billing'], 'billing.'));
+        $data = $validator->validate();
 
-        return Api::ok('Pedido creado', $this->orders->create($r->user()->id, $data['items']));
+        return Api::ok('Pedido creado', $this->orders->create($r->user()->id, $data['items'], $data['billing']));
     }
 
     public function index(Request $r)

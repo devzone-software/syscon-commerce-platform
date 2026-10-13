@@ -37,9 +37,15 @@ class CommerceTest extends TestCase
         return app(CatalogService::class)->upsert(['sku' => $sku, 'name' => 'Producto & prueba', 'price' => '10.15', 'stock' => $stock, 'active' => true, 'category' => 'Computación', 'brand' => 'SYSCON']);
     }
 
-    private function order(array $headers, array $product, int $quantity = 2): array
+    /** Boleta con DNI: el bloque de facturación que exige la creación de pedidos. */
+    private const BILLING = ['type' => '03', 'documentType' => '1', 'documentNumber' => '12345678', 'name' => 'Ana Quispe'];
+
+    /** RUC con dígito verificador válido (módulo 11). */
+    private const RUC = '20123456786';
+
+    private function order(array $headers, array $product, int $quantity = 2, array $billing = self::BILLING): array
     {
-        return $this->postJson('/api/orders', ['items' => [['productId' => $product['id'], 'quantity' => $quantity]]], $headers)->assertOk()->json('data');
+        return $this->postJson('/api/orders', ['items' => [['productId' => $product['id'], 'quantity' => $quantity]], 'billing' => $billing], $headers)->assertOk()->json('data');
     }
 
     private function paidOrder(): array
@@ -55,7 +61,7 @@ class CommerceTest extends TestCase
 
     private function invoiceInput(string $order): array
     {
-        return ['orderId' => $order, 'type' => '01', 'serialNumber' => 'F001-1', 'customerDocumentType' => '6', 'customerDocumentNumber' => '20123456789', 'customerName' => 'Cliente & Cía'];
+        return ['orderId' => $order, 'type' => '01', 'serialNumber' => 'F001-1', 'customerDocumentType' => '6', 'customerDocumentNumber' => self::RUC, 'customerName' => 'Cliente & Cía'];
     }
 
     public function test_authentication_rotation_logout_and_role_protection(): void
@@ -128,7 +134,7 @@ class CommerceTest extends TestCase
         $p = $this->product(2);
         $o = $this->order($h, $p);
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 0);
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1]]], $this->token())->assertConflict();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING], $this->token())->assertConflict();
         $admin = $this->token('ADMIN');
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertOk();
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 2);
@@ -140,10 +146,10 @@ class CommerceTest extends TestCase
         $h = $this->token();
         $p = $this->product();
         $other = $this->product(0, 'SKU-2');
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $other['id'], 'quantity' => 1]]], $h)->assertConflict();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $other['id'], 'quantity' => 1]], 'billing' => self::BILLING], $h)->assertConflict();
         $this->assertDatabaseHas('products', ['id' => $p['id'], 'reserved' => 0]);
         $this->assertDatabaseCount('orders', 0);
-        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $p['id'], 'quantity' => 1]]], $h)->assertUnprocessable();
+        $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1], ['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING], $h)->assertUnprocessable();
     }
 
     public function test_payment_ownership_confirmation_idempotency_and_transitions(): void
@@ -211,6 +217,56 @@ class CommerceTest extends TestCase
         Http::fake(['*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nGOOD;Good;2.00;3;;;\nBAD;Bad;-1;1;;;\n", 200)]);
         $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertOk()->assertJsonPath('data.status', 'FAILED');
         $this->assertDatabaseCount('products', 0);
+    }
+
+    public function test_order_requires_valid_billing_and_keeps_a_copy(): void
+    {
+        $h = $this->token();
+        $p = $this->product(10);
+        $items = [['productId' => $p['id'], 'quantity' => 1]];
+        $this->postJson('/api/orders', ['items' => $items], $h)->assertUnprocessable()->assertJsonPath('success', false);
+        $invalid = [
+            ['documentNumber' => '1234567'] + self::BILLING,
+            ['type' => '01', 'documentType' => '1'] + self::BILLING,
+            ['type' => '01', 'documentType' => '6', 'documentNumber' => '20123456789'] + self::BILLING,
+            ['documentType' => '7', 'documentNumber' => 'AB#1'] + self::BILLING,
+            ['name' => ' '] + self::BILLING,
+            ['type' => '07'] + self::BILLING,
+        ];
+        foreach ($invalid as $billing) {
+            $this->postJson('/api/orders', ['items' => $items, 'billing' => $billing], $h)->assertUnprocessable();
+        }
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseHas('products', ['id' => $p['id'], 'reserved' => 0]);
+
+        $factura = ['type' => '01', 'documentType' => '6', 'documentNumber' => ' 2012 3456 786 ', 'name' => '  Comercial  Andina SAC ', 'address' => 'Av. Arequipa 123, Lima'];
+        $o = $this->order($h, $p, 1, $factura);
+        $this->assertSame(['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Comercial Andina SAC', 'address' => 'Av. Arequipa 123, Lima'], $o['billing']);
+        $this->assertNotNull($o['createdAt']);
+        $this->getJson('/api/orders/'.$o['id'], $h)->assertOk()->assertJsonPath('data.billing.name', 'Comercial Andina SAC');
+        // Se guarda en el propio pedido (no se lee del perfil), así que cambios posteriores del perfil no la alteran.
+        $this->assertDatabaseHas('orders', ['id' => $o['id'], 'billing_document_number' => self::RUC]);
+        $this->assertNull($this->order($h, $p, 1, ['address' => ''] + self::BILLING)['billing']['address']);
+    }
+
+    public function test_profile_returns_registered_identity(): void
+    {
+        $this->postJson('/api/auth/register', ['email' => 'luz@example.com', 'password' => 'secure-password-123', 'firstName' => 'Luz', 'lastName' => 'Paz', 'documentType' => 'DNI', 'documentNumber' => '87654321'])->assertCreated();
+        $token = $this->postJson('/api/auth/login', ['email' => 'luz@example.com', 'password' => 'secure-password-123'])->json('data.accessToken');
+        $this->getJson('/api/auth/profile', ['Authorization' => 'Bearer '.$token])->assertOk()
+            ->assertJsonPath('data.firstName', 'Luz')->assertJsonPath('data.documentType', 'DNI')->assertJsonPath('data.documentNumber', '87654321');
+        $this->getJson('/api/auth/profile')->assertUnauthorized();
+    }
+
+    public function test_invoice_prefills_customer_from_order_billing_and_validates_document(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $base = ['orderId' => $order['id'], 'type' => '01', 'serialNumber' => 'F001-9'];
+        // El pedido se compró con boleta/DNI: una factura necesita RUC explícito.
+        $this->postJson('/api/invoices', $base, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', $base + ['customerDocumentType' => '6', 'customerDocumentNumber' => '20123456789'], $admin)->assertUnprocessable();
+        $boleta = $this->postJson('/api/invoices', ['type' => '03', 'serialNumber' => 'B001-9'] + $base, $admin)->assertOk()->json('data');
+        $this->assertDatabaseHas('invoices', ['id' => $boleta['id'], 'customer_document_type' => '1', 'customer_document_number' => '12345678', 'customer_name' => 'Ana Quispe']);
     }
 
     public function test_invoice_paid_order_requirement_unique_serial_xml_and_missing_credentials(): void

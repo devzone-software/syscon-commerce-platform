@@ -2,6 +2,7 @@
 
 namespace App\Modules\Invoices;
 
+use App\Modules\Orders\BillingData;
 use App\Modules\Orders\OrderService;
 use App\Support\Api;
 use Illuminate\Http\Request;
@@ -14,12 +15,14 @@ class InvoiceController
 
     public function store(Request $r)
     {
-        $data = $r->validate(['orderId' => 'required|uuid', 'type' => 'required|in:01,03,07,08', 'serialNumber' => ['required', 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/'], 'customerDocumentType' => 'required|string|max:2', 'customerDocumentNumber' => 'required|string|max:20', 'customerName' => 'required|string|max:255', 'referencedSerialNumber' => 'nullable|string|max:20']);
+        $data = $r->validate(['orderId' => 'required|uuid', 'type' => 'required|in:01,03,07,08', 'serialNumber' => ['required', 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/'], 'customerDocumentType' => 'nullable|in:'.implode(',', BillingData::DOCUMENT_TYPES), 'customerDocumentNumber' => 'nullable|string|max:15', 'customerName' => 'nullable|string|max:255', 'referencedSerialNumber' => 'nullable|string|max:20']);
         abort_if(($data['type'] === '01' && ! str_starts_with($data['serialNumber'], 'F')) || ($data['type'] === '03' && ! str_starts_with($data['serialNumber'], 'B')), 422, 'Serie incompatible');
 
         return DB::transaction(function () use ($data) {
             $o = DB::table('orders')->where('id', $data['orderId'])->lockForUpdate()->first();
             abort_unless($o, 404, 'Pedido no encontrado');
+            // Sin datos explícitos se usa la copia guardada en el pedido al comprar.
+            $data = $this->customer($data, $o);
             abort_unless(in_array($o->status, ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'], true), 409, 'Pedido no pagado');
             abort_if(DB::table('invoices')->where('serial_number', $data['serialNumber'])->exists(), 409, 'Serie ya registrada');
             if (in_array($data['type'], ['01', '03'], true)) {
@@ -36,6 +39,20 @@ class InvoiceController
 
             return Api::ok('Comprobante creado', $this->view($id));
         }, 3);
+    }
+
+    /** Completa el cliente desde el pedido y aplica las mismas reglas de documento que el checkout. */
+    private function customer(array $data, object $order): array
+    {
+        $data['customerDocumentType'] ??= $order->billing_document_type;
+        $data['customerDocumentNumber'] = strtoupper(str_replace(' ', '', trim((string) ($data['customerDocumentNumber'] ?? $order->billing_document_number))));
+        $data['customerName'] = trim((string) ($data['customerName'] ?? $order->billing_name));
+        abort_if(! $data['customerDocumentType'] || $data['customerDocumentNumber'] === '' || $data['customerName'] === '', 422, 'Datos del cliente requeridos');
+        abort_if($data['type'] === '01' && $data['customerDocumentType'] !== '6', 422, 'La factura requiere el RUC del cliente.');
+        $error = BillingData::documentError($data['customerDocumentType'], $data['customerDocumentNumber']);
+        abort_if($error !== null, 422, $error ?? '');
+
+        return $data;
     }
 
     public function show(string $id)
