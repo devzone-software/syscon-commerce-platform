@@ -25,6 +25,7 @@ Route::prefix('catalog')->controller(CatalogController::class)->group(function (
     Route::post('products', 'store')->middleware(['jwt', 'permission:catalog:write']);
     Route::post('internal/products', 'store')->middleware('internal');
 });
+Route::get('orders/delivery-options', [OrderController::class, 'deliveryOptions']);
 Route::get('orders/internal/{id}', [OrderController::class, 'internalShow'])->middleware('internal')->whereUuid('id');
 Route::post('orders/internal/{id}/paid', [OrderController::class, 'paid'])->middleware('internal')->whereUuid('id');
 Route::middleware('jwt')->group(function () {

@@ -45,6 +45,18 @@ class UblXmlBuilder
             $this->basic($this->agg($line, 'Item'), 'Description', $detail['name']);
             $this->amount($this->agg($line, 'Price'), 'PriceAmount', $detail['unitPrice']);
         }
+        // El envío forma parte del total cobrado, así que figura como línea de servicio (unidad ZZ).
+        $deliveryCost = $order['delivery']['cost'] ?? '0.00';
+        if (bccomp($deliveryCost, '0', 2) > 0) {
+            $line = $this->agg($r, $root.'Line');
+            $this->basic($line, 'ID', (string) (count($order['details']) + 1));
+            $this->basic($line, match ($root) {
+                'Invoice' => 'InvoicedQuantity','CreditNote' => 'CreditedQuantity',default => 'DebitedQuantity'
+            }, '1')->setAttribute('unitCode', 'ZZ');
+            $this->amount($line, 'LineExtensionAmount', $deliveryCost);
+            $this->basic($this->agg($line, 'Item'), 'Description', 'Servicio de envío a domicilio');
+            $this->amount($this->agg($line, 'Price'), 'PriceAmount', $deliveryCost);
+        }
         $this->amount($this->agg($r, $root === 'DebitNote' ? 'RequestedMonetaryTotal' : 'LegalMonetaryTotal'), 'PayableAmount', $order['total']);
 
         return $d->saveXML();
