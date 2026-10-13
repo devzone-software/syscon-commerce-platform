@@ -26,9 +26,10 @@ class PaymentController
                 $id = (string) Str::uuid();
                 DB::table('payments')->insert(['id' => $id, 'order_id' => $o->id, 'customer_id' => $o->customer_id, 'provider' => 'MANUAL', 'status' => 'PENDING', 'amount' => $o->total, 'created_at' => now(), 'updated_at' => now()]);
                 $p = DB::table('payments')->where('id', $id)->first();
+                $this->orders->record($o->id, $r->user()->id, 'PAYMENT_REQUESTED', null, null, $id);
             }
 
-            return Api::ok('Pago creado', $this->view($p));
+            return Api::ok('Pago creado', self::view($p));
         }, 3);
     }
 
@@ -38,29 +39,36 @@ class PaymentController
         abort_unless($p, 404, 'Pago no encontrado');
         abort_unless($p->customer_id === $r->user()->id || in_array('payments:confirm', $r->user()->permissions(), true), 403, 'Pago ajeno');
 
-        return Api::ok('Pago', $this->view($p));
+        return Api::ok('Pago', self::view($p));
     }
 
     public function confirm(Request $r, string $id)
     {
         $data = $r->validate(['reference' => 'required|string|max:255']);
 
-        return DB::transaction(function () use ($id, $data) {
+        return DB::transaction(function () use ($r, $id, $data) {
+            // Mismo orden de bloqueo que cancelar o vencer (pedido y luego pago) para no cruzarse.
+            $orderId = DB::table('payments')->where('id', $id)->value('order_id');
+            abort_unless($orderId, 404, 'Pago no encontrado');
+            DB::table('orders')->where('id', $orderId)->lockForUpdate()->first();
             $p = DB::table('payments')->where('id', $id)->lockForUpdate()->first();
-            abort_unless($p, 404, 'Pago no encontrado');
             if ($p->status === 'APPROVED') {
-                return Api::ok('Pago confirmado', $this->view($p));
+                return Api::ok('Pago confirmado', self::view($p));
             }
             abort_unless($p->provider === 'MANUAL' && $p->status === 'PENDING', 409, 'Pago no pendiente');
-            $this->orders->transition($p->order_id, 'PAID');
-            DB::table('payments')->where('id', $id)->update(['status' => 'APPROVED', 'external_reference' => $data['reference'], 'updated_at' => now()]);
+            $this->orders->transition($p->order_id, 'PAID', $r->user()->id, $data['reference']);
+            DB::table('payments')->where('id', $id)->update(['status' => 'APPROVED', 'external_reference' => $data['reference'], 'confirmed_by' => $r->user()->id, 'confirmed_at' => now(), 'updated_at' => now()]);
 
-            return Api::ok('Pago confirmado', $this->view(DB::table('payments')->where('id', $id)->first()));
+            return Api::ok('Pago confirmado', self::view(DB::table('payments')->where('id', $id)->first()));
         }, 3);
     }
 
-    private function view(object $p): array
+    public static function view(object $p): array
     {
-        return ['id' => $p->id, 'orderId' => $p->order_id, 'customerId' => $p->customer_id, 'provider' => $p->provider, 'status' => $p->status, 'amount' => bcadd((string) $p->amount,'0',2), 'externalReference' => $p->external_reference, 'paymentUrl' => $p->payment_url];
+        $instructions = trim((string) config('commerce.payments.manual_instructions'));
+
+        return ['id' => $p->id, 'orderId' => $p->order_id, 'customerId' => $p->customer_id, 'provider' => $p->provider, 'status' => $p->status, 'amount' => bcadd((string) $p->amount, '0', 2), 'externalReference' => $p->external_reference, 'paymentUrl' => $p->payment_url,
+            'instructions' => $p->provider === 'MANUAL' && $p->status === 'PENDING' && $instructions !== '' ? $instructions : null,
+            'confirmedAt' => OrderService::iso($p->confirmed_at ?? null), 'createdAt' => OrderService::iso($p->created_at ?? null)];
     }
 }

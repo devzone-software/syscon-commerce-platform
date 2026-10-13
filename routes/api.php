@@ -3,6 +3,7 @@
 use App\Modules\Auth\AuthController;
 use App\Modules\Catalog\CatalogController;
 use App\Modules\Invoices\InvoiceController;
+use App\Modules\Orders\AdminOrderController;
 use App\Modules\Orders\OrderController;
 use App\Modules\Payments\PaymentController;
 use App\Modules\Suppliers\SupplierController;
@@ -33,6 +34,11 @@ Route::middleware('jwt')->group(function () {
     Route::post('orders', [OrderController::class, 'store']);
     Route::get('orders/{id}', [OrderController::class, 'show'])->whereUuid('id');
     Route::patch('orders/{id}/status/{status}', [OrderController::class, 'status'])->middleware('permission:orders:manage')->whereUuid('id');
+    Route::prefix('admin')->group(function () {
+        Route::get('orders', [AdminOrderController::class, 'index'])->middleware('permission:orders:manage');
+        Route::get('orders/{id}', [AdminOrderController::class, 'show'])->middleware('permission:orders:manage')->whereUuid('id');
+        Route::get('payments', [AdminOrderController::class, 'payments'])->middleware('permission:payments:confirm');
+    });
     Route::post('payments', [PaymentController::class, 'store']);
     Route::get('payments/{id}', [PaymentController::class, 'show'])->whereUuid('id');
     Route::post('payments/{id}/confirm', [PaymentController::class, 'confirm'])->middleware('permission:payments:confirm')->whereUuid('id');
@@ -46,6 +52,6 @@ Route::middleware('jwt')->group(function () {
     Route::prefix('invoices')->middleware('permission:invoices:submit')->controller(InvoiceController::class)->group(function () {
         Route::post('/', 'store');
         Route::get('{id}', 'show')->whereUuid('id');
-        Route::post('{id}/submit','submit')->whereUuid('id');
+        Route::post('{id}/submit', 'submit')->whereUuid('id');
     });
 });

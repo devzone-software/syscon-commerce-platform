@@ -51,11 +51,12 @@ class OrderController
         return Api::ok('Pedido', $o);
     }
 
-    public function status(string $id, string $status)
+    public function status(Request $r, string $id, string $status)
     {
         abort_if($status === 'PAID', 403, 'Confirmar pago mediante el módulo de pagos');
+        abort_if($status === 'EXPIRED', 403, 'El vencimiento lo aplica el sistema');
 
-        return Api::ok('Estado actualizado', $this->orders->transition($id, $status));
+        return Api::ok('Estado actualizado', $this->orders->transition($id, $status, $r->user()->id));
     }
 
     public function internalShow(string $id)
@@ -65,6 +66,6 @@ class OrderController
 
     public function paid(string $id)
     {
-        return Api::ok('Pago confirmado', $this->orders->transition($id,'PAID'));
+        return Api::ok('Pago confirmado', $this->orders->transition($id, 'PAID'));
     }
 }

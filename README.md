@@ -49,6 +49,8 @@ Respuestas: `{"success":true,"message":"...","data":...}`. Los errores mantienen
 - Catalog: `GET /api/catalog/products[/{id}]`, `categories`, `brands`; ADMIN crea/actualiza productos por SKU con `POST products`.
 - Orders: `GET|POST /api/orders`, `GET /api/orders/{id}`; ADMIN cambia estados con `PATCH /api/orders/{id}/status/{status}`.
 - Payments: `POST /api/payments`, `GET /api/payments/{id}`; ADMIN confirma con `POST /api/payments/{id}/confirm` y `reference`.
+- Backoffice: `GET /api/admin/orders` (filtros `status` separado por comas, `q`, `from`, `to`, `page`, `perPage`; devuelve conteo por estado) y `GET /api/admin/orders/{id}` (cliente, pagos, comprobantes e historial) con `orders:manage`; `GET /api/admin/payments` (por defecto `PENDING`, los más antiguos primero) con `payments:confirm`.
+- Vencimiento: un pedido impago reserva stock `ORDER_RESERVATION_HOURS` horas (48 por defecto; 0 lo desactiva). El scheduler ejecuta `orders:expire` cada 5 minutos, pasa el pedido a `EXPIRED`, libera la reserva y cancela su pago pendiente. `MANUAL_PAYMENT_INSTRUCTIONS` es el texto que ve el cliente mientras su pago manual está pendiente.
 - Suppliers: ADMIN usa `GET|POST /api/suppliers`, `POST /{id}/run`, `GET /jobs`, `GET /jobs/{id}/history`.
 - Invoices: ADMIN usa `POST /api/invoices`, `GET /{id}`, `POST /{id}/submit`.
 

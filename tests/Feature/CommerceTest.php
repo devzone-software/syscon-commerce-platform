@@ -188,7 +188,103 @@ class CommerceTest extends TestCase
         $pay = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertOk();
         $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'BANK-1'], $admin)->assertConflict();
-        $this->assertDatabaseHas('payments', ['id' => $pay['id'], 'status' => 'PENDING']);
+        $this->assertDatabaseHas('payments', ['id' => $pay['id'], 'status' => 'CANCELLED', 'external_reference' => null]);
+        $this->assertDatabaseHas('orders', ['id' => $o['id'], 'status' => 'CANCELLED']);
+    }
+
+    public function test_unpaid_orders_expire_once_and_release_stock(): void
+    {
+        $h = $this->token();
+        $admin = $this->token('ADMIN');
+        $p = $this->product();
+        $o = $this->order($h, $p, 3);
+        $this->assertNotNull($o['expiresAt']);
+        $paid = $this->order($h, $p, 1);
+        $payPaid = $this->postJson('/api/payments', ['orderId' => $paid['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
+        $this->postJson('/api/payments/'.$payPaid['id'].'/confirm', ['reference' => 'BANK-9'], $admin)->assertOk();
+        $pay = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
+        $this->assertSame(0, app(OrderService::class)->expireDue());
+        $this->patchJson('/api/orders/'.$o['id'].'/status/EXPIRED', [], $admin)->assertForbidden();
+
+        $this->travel(49)->hours();
+        $this->artisan('orders:expire')->expectsOutput('Pedidos vencidos: 1')->assertSuccessful();
+        $this->assertSame(0, app(OrderService::class)->expireDue());
+        $this->assertDatabaseHas('orders', ['id' => $o['id'], 'status' => 'EXPIRED']);
+        $this->assertDatabaseHas('orders', ['id' => $paid['id'], 'status' => 'PAID']);
+        $this->assertDatabaseHas('products', ['id' => $p['id'], 'stock' => 4, 'reserved' => 0]);
+        $this->assertDatabaseHas('payments', ['id' => $pay['id'], 'status' => 'CANCELLED']);
+        $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'BANK-1'], $admin)->assertConflict();
+        $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertConflict();
+        $this->assertDatabaseHas('order_events', ['order_id' => $o['id'], 'type' => 'EXPIRED', 'actor_id' => null, 'from_status' => 'PAYMENT_PENDING', 'to_status' => 'EXPIRED']);
+        $this->getJson('/api/orders/'.$o['id'], $h)->assertOk()->assertJsonPath('data.status', 'EXPIRED')->assertJsonPath('data.expiresAt', null);
+    }
+
+    public function test_reservation_without_deadline_never_expires(): void
+    {
+        config(['commerce.orders.reservation_hours' => 0]);
+        $o = $this->order($this->token(), $this->product());
+        $this->assertNull($o['expiresAt']);
+        $this->travel(365)->days();
+        $this->assertSame(0, app(OrderService::class)->expireDue());
+    }
+
+    public function test_manual_payment_shows_instructions_only_while_pending(): void
+    {
+        config(['commerce.payments.manual_instructions' => "BCP 123-456\nAvisar al 987654321"]);
+        $h = $this->token();
+        $o = $this->order($h, $this->product());
+        $pay = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()
+            ->assertJsonPath('data.instructions', "BCP 123-456\nAvisar al 987654321")->json('data');
+        $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'OP-77'], $this->token('ADMIN'))->assertOk()
+            ->assertJsonPath('data.instructions', null)->assertJsonPath('data.status', 'APPROVED');
+        $this->assertNotNull(DB::table('payments')->where('id', $pay['id'])->value('confirmed_at'));
+    }
+
+    public function test_admin_inboxes_list_filter_and_detail_with_history(): void
+    {
+        $h = $this->token();
+        $other = $this->token();
+        $admin = $this->token('ADMIN');
+        $p = $this->product(10);
+        $first = $this->order($h, $p, 1);
+        $second = $this->order($other, $p, 1, ['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Empresa Andina SAC', 'address' => 'Av. Lima 123']);
+        $pay = $this->postJson('/api/payments', ['orderId' => $first['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
+        $this->travel(1)->minutes();
+        $this->postJson('/api/payments', ['orderId' => $second['id'], 'provider' => 'MANUAL'], $other)->assertOk();
+
+        $this->getJson('/api/admin/orders', $h)->assertForbidden();
+        $this->getJson('/api/admin/payments', $h)->assertForbidden();
+        $this->getJson('/api/admin/orders/'.$first['id'], $h)->assertForbidden();
+        $this->getJson('/api/admin/orders?status=UNKNOWN', $admin)->assertStatus(422);
+
+        $this->getJson('/api/admin/payments', $admin)->assertOk()->assertJsonPath('data.total', 2)
+            ->assertJsonPath('data.items.0.id', $pay['id'])->assertJsonPath('data.items.0.orderStatus', 'PAYMENT_PENDING');
+        $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'BANK-55'], $admin)->assertOk();
+        $this->getJson('/api/admin/payments', $admin)->assertOk()->assertJsonPath('data.total', 1);
+        $this->getJson('/api/admin/payments?status=APPROVED&q=BANK-55', $admin)->assertOk()->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.items.0.externalReference', 'BANK-55');
+
+        $list = $this->getJson('/api/admin/orders?perPage=1', $admin)->assertOk()->json('data');
+        $this->assertSame(2, $list['total']);
+        $this->assertCount(1, $list['items']);
+        $this->assertSame(['PAYMENT_PENDING' => 1, 'PAID' => 1], array_filter($list['counts']));
+        $this->getJson('/api/admin/orders?status=PAID', $admin)->assertOk()->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.items.0.id', $first['id'])->assertJsonPath('data.items.0.payment.status', 'APPROVED');
+        $this->getJson('/api/admin/orders?q=andina', $admin)->assertOk()->assertJsonPath('data.total', 1)->assertJsonPath('data.items.0.id', $second['id']);
+        $this->getJson('/api/admin/orders?q='.self::RUC, $admin)->assertOk()->assertJsonPath('data.total', 1);
+        $this->getJson('/api/admin/orders?q='.substr($first['id'], 0, 8), $admin)->assertOk()->assertJsonPath('data.items.0.id', $first['id']);
+        $this->getJson('/api/admin/orders?q=100%25', $admin)->assertOk()->assertJsonPath('data.total', 0);
+        $this->getJson('/api/admin/orders?from=2000-01-02&to=2000-01-01', $admin)->assertStatus(422);
+
+        $this->patchJson('/api/orders/'.$first['id'].'/status/PROCESSING', [], $admin)->assertOk();
+        $detail = $this->getJson('/api/admin/orders/'.$first['id'], $admin)->assertOk()->json('data');
+        $this->assertSame('PROCESSING', $detail['status']);
+        $this->assertNotNull($detail['customer']['email']);
+        $this->assertNotNull($detail['payments'][0]['confirmedBy']);
+        $this->assertSame(['CREATED', 'PAYMENT_REQUESTED', 'PAYMENT_CONFIRMED', 'STATUS_CHANGED'], array_column($detail['events'], 'type'));
+        $this->assertSame('BANK-55', $detail['events'][2]['reference']);
+        $this->assertSame($detail['payments'][0]['confirmedBy'], $detail['events'][2]['actor']);
+        $this->assertSame($detail['customer']['email'], $detail['events'][0]['actor']);
     }
 
     public function test_catalog_updates_cannot_erase_pending_reservations(): void

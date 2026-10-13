@@ -5,9 +5,13 @@ namespace App\Modules\Orders;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class OrderService
 {
+    /** Estados que liberan la reserva de stock sin consumirla. */
+    public const RELEASED = ['CANCELLED', 'EXPIRED'];
+
     /**
      * @param  array|null  $billing  Datos ya validados con BillingData; se guardan como copia del momento de compra.
      * @param  array|null  $delivery  Datos ya validados con DeliveryData; el costo se calcula aquí, no lo envía el cliente.
@@ -58,8 +62,10 @@ class OrderService
                 'idempotency_key' => $idempotencyKey, 'request_hash' => $idempotencyKey ? $hash : null,
                 'billing_type' => $billing['type'] ?? null, 'billing_document_type' => $billing['documentType'] ?? null,
                 'billing_document_number' => $billing['documentNumber'] ?? null, 'billing_name' => $billing['name'] ?? null,
-                'billing_address' => $billing['address'] ?? null, 'created_at' => now(), 'updated_at' => now()]);
+                'billing_address' => $billing['address'] ?? null, 'expires_at' => self::reservationDeadline(),
+                'created_at' => now(), 'updated_at' => now()]);
             DB::table('order_details')->insert($details);
+            $this->record($id, $customer, 'CREATED', null, 'PAYMENT_PENDING');
 
             return $this->get($id);
         }, 3);
@@ -86,6 +92,43 @@ class OrderService
         return $lines;
     }
 
+    /** Fin de la reserva de un pedido impago; null si ORDER_RESERVATION_HOURS es 0 (sin vencimiento). */
+    public static function reservationDeadline(): ?\DateTimeInterface
+    {
+        $hours = (int) config('commerce.orders.reservation_hours');
+
+        return $hours > 0 ? now()->addHours($hours) : null;
+    }
+
+    /** Historial del pedido: quién hizo qué y cuándo (actor null = sistema). */
+    public function record(string $order, ?string $actor, string $type, ?string $from = null, ?string $to = null, ?string $reference = null): void
+    {
+        DB::table('order_events')->insert(['order_id' => $order, 'actor_id' => $actor, 'type' => $type, 'from_status' => $from, 'to_status' => $to, 'reference' => $reference, 'created_at' => now()]);
+    }
+
+    /**
+     * Vence los pedidos impagos cuya reserva terminó. Cada pedido se procesa con su propio bloqueo,
+     * así que un pago confirmado o una cancelación simultánea gana o pierde sin liberar dos veces.
+     */
+    public function expireDue(): int
+    {
+        $expired = 0;
+        $due = DB::table('orders')->where('status', 'PAYMENT_PENDING')->whereNotNull('expires_at')->where('expires_at', '<=', now())->orderBy('expires_at')->limit(500)->pluck('id');
+        foreach ($due as $id) {
+            try {
+                $this->transition($id, 'EXPIRED');
+                $expired++;
+            } catch (HttpException $e) {
+                // Otro proceso ya lo pagó, canceló o venció.
+                if ($e->getStatusCode() !== 409) {
+                    throw $e;
+                }
+            }
+        }
+
+        return $expired;
+    }
+
     public function get(string $id): array
     {
         $o = DB::table('orders')->where('id', $id)->first();
@@ -96,20 +139,26 @@ class OrderService
         $deliveryCost = bcadd((string) ($o->delivery_cost ?? '0'), '0', 2);
         $delivery = $o->delivery_method === null ? null : ['method' => $o->delivery_method, 'cost' => $deliveryCost, 'contactName' => $o->contact_name, 'contactPhone' => $o->contact_phone, 'address' => $o->delivery_address, 'district' => $o->delivery_district, 'reference' => $o->delivery_reference];
 
-        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2), 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => $o->created_at ? date(DATE_ATOM, strtotime((string) $o->created_at)) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2)])->all()];
+        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2), 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => self::iso($o->created_at), 'expiresAt' => $o->status === 'PAYMENT_PENDING' ? self::iso($o->expires_at) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2)])->all()];
     }
 
-    public function transition(string $id, string $target): array
+    public static function iso(mixed $value): ?string
     {
-        return DB::transaction(function () use ($id, $target) {
+        return $value ? date(DATE_ATOM, strtotime((string) $value)) : null;
+    }
+
+    /** @param string|null $actor Usuario que pide el cambio; null cuando lo hace el sistema. */
+    public function transition(string $id, string $target, ?string $actor = null, ?string $reference = null): array
+    {
+        return DB::transaction(function () use ($id, $target, $actor, $reference) {
             $o = DB::table('orders')->where('id', $id)->lockForUpdate()->first();
             abort_unless($o, 404, 'Pedido no encontrado');
             if ($target === 'PAID' && $o->status === 'PAID') {
                 return $this->get($id);
             }
             $next = ['PAYMENT_PENDING' => 'PAID', 'PAID' => 'PROCESSING', 'PROCESSING' => 'SHIPPED', 'SHIPPED' => 'DELIVERED'];
-            abort_unless(($next[$o->status] ?? null) === $target || ($target === 'CANCELLED' && $o->status === 'PAYMENT_PENDING'), 409, 'Transición de pedido inválida');
-            if (in_array($target, ['PAID', 'CANCELLED'], true)) {
+            abort_unless(($next[$o->status] ?? null) === $target || (in_array($target, self::RELEASED, true) && $o->status === 'PAYMENT_PENDING'), 409, 'Transición de pedido inválida');
+            if ($target === 'PAID' || in_array($target, self::RELEASED, true)) {
                 foreach (DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get() as $d) {
                     $p = DB::table('products')->where('id', $d->product_id)->lockForUpdate()->first();
                     abort_unless($p && $p->reserved >= $d->quantity && $p->stock >= $d->quantity, 409, 'Reserva de inventario inconsistente');
@@ -117,6 +166,11 @@ class OrderService
                 }
             }
             DB::table('orders')->where('id', $id)->update(['status' => $target, 'updated_at' => now()]);
+            if (in_array($target, self::RELEASED, true)) {
+                // Una solicitud de pago pendiente ya no puede confirmarse.
+                DB::table('payments')->where('order_id', $id)->where('status', 'PENDING')->update(['status' => 'CANCELLED', 'updated_at' => now()]);
+            }
+            $this->record($id, $actor, $target === 'EXPIRED' ? 'EXPIRED' : ($target === 'PAID' ? 'PAYMENT_CONFIRMED' : 'STATUS_CHANGED'), $o->status, $target, $reference);
 
             return $this->get($id);
         }, 3);

@@ -9,6 +9,10 @@ return [
         'pickup_address' => env('PICKUP_ADDRESS', ''), 'pickup_hours' => env('PICKUP_HOURS', ''),
         'fee' => env('DELIVERY_FEE', ''), 'areas' => env('DELIVERY_AREAS', ''),
     ],
+    // Reserva de stock de un pedido impago: al vencer se libera (0 desactiva el vencimiento).
+    'orders' => ['reservation_hours' => (int) env('ORDER_RESERVATION_HOURS', 48)],
+    // Texto que ve el cliente en su solicitud de pago manual (cuentas, CCI, a quién avisar).
+    'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', ''))],
     'sunat' => [
         'ruc' => env('SUNAT_RUC', ''), 'legal_name' => env('SUNAT_LEGAL_NAME', 'SYSCON'),
         'user' => env('SUNAT_SOL_USER', ''), 'password' => env('SUNAT_SOL_PASSWORD', ''),
