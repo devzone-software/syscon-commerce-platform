@@ -31,8 +31,9 @@ class ConfigureCommerce extends Command
             if (! file_exists($db)) {
                 touch($db);
             }
-            foreach (['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $db] as $key => $value) {
-                $text = preg_replace('/^'.$key.'=.*$/m', $key.'='.$value, $text);
+            // Comillas simples: dotenv las toma literales, admite espacios y barras invertidas de Windows.
+            foreach (['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => "'".$db."'"] as $key => $value) {
+                $text = preg_replace_callback('/^'.$key.'=.*$/m', fn () => $key.'='.$value, $text);
             }
         }
         file_put_contents($path, $text);
