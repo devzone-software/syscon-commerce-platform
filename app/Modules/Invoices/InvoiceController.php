@@ -11,34 +11,90 @@ use Illuminate\Support\Str;
 
 class InvoiceController
 {
-    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway) {}
+    private const SERIES = 'regex:/^[FB][A-Z0-9]{3}$/';
 
+    private const SERIAL = 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/';
+
+    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering) {}
+
+    /**
+     * Crea el borrador con la serie y el correlativo que asigna el backend. Si el pedido ya tiene
+     * su boleta o factura del mismo tipo, devuelve esa (un reintento no emite un segundo documento).
+     */
     public function store(Request $r)
     {
-        $data = $r->validate(['orderId' => 'required|uuid', 'type' => 'required|in:01,03,07,08', 'serialNumber' => ['required', 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/'], 'customerDocumentType' => 'nullable|in:'.implode(',', BillingData::DOCUMENT_TYPES), 'customerDocumentNumber' => 'nullable|string|max:15', 'customerName' => 'nullable|string|max:255', 'referencedSerialNumber' => 'nullable|string|max:20']);
-        abort_if(($data['type'] === '01' && ! str_starts_with($data['serialNumber'], 'F')) || ($data['type'] === '03' && ! str_starts_with($data['serialNumber'], 'B')), 422, 'Serie incompatible');
+        $data = $r->validate(['orderId' => 'required|uuid', 'type' => 'required|in:01,03,07,08', 'series' => ['nullable', self::SERIES], 'customerDocumentType' => 'nullable|in:'.implode(',', BillingData::DOCUMENT_TYPES), 'customerDocumentNumber' => 'nullable|string|max:15', 'customerName' => 'nullable|string|max:255', 'referencedSerialNumber' => ['nullable', self::SERIAL]]);
+        $main = in_array($data['type'], ['01', '03'], true);
 
-        return DB::transaction(function () use ($data) {
+        return DB::transaction(function () use ($data, $main) {
             $o = DB::table('orders')->where('id', $data['orderId'])->lockForUpdate()->first();
             abort_unless($o, 404, 'Pedido no encontrado');
-            // Sin datos explícitos se usa la copia guardada en el pedido al comprar.
-            $data = $this->customer($data, $o);
             abort_unless(in_array($o->status, ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'], true), 409, 'Pedido no pagado');
-            abort_if(DB::table('invoices')->where('serial_number', $data['serialNumber'])->exists(), 409, 'Serie ya registrada');
-            if (in_array($data['type'], ['01', '03'], true)) {
-                abort_if(DB::table('invoices')->where('order_id', $o->id)->whereIn('type', ['01', '03'])->exists(), 409, 'Pedido ya facturado');
+            if ($main) {
+                $existing = DB::table('invoices')->where('order_id', $o->id)->whereIn('type', ['01', '03'])->first();
+                if ($existing) {
+                    abort_unless($existing->type === $data['type'], 409, 'Pedido ya facturado');
+
+                    return Api::ok('Comprobante ya registrado', $this->view($existing->id));
+                }
+                $prefix = null;
             } else {
                 abort_if(empty($data['referencedSerialNumber']), 422, 'Documento de referencia requerido');
                 $original = DB::table('invoices')->where('serial_number', $data['referencedSerialNumber'])->first();
                 abort_unless($original && $original->order_id === $o->id && $original->status === 'ACCEPTED' && in_array($original->type, ['01', '03'], true), 409, 'Comprobante de referencia no aceptado');
+                // La nota usa una serie con la misma letra que el comprobante que modifica.
+                $prefix = $original->serial_number[0];
+                abort_if(isset($data['series']) && $data['series'][0] !== $prefix, 422, 'La serie de la nota debe empezar con '.$prefix);
             }
+            // Sin datos explícitos se usa la copia guardada en el pedido al comprar.
+            $data = $this->customer($data, $o);
+            $serial = $this->numbering->next($data['type'], $data['series'] ?? null, $prefix);
             $id = (string) Str::uuid();
-            DB::table('invoices')->insert(['id' => $id, 'order_id' => $o->id, 'type' => $data['type'], 'serial_number' => $data['serialNumber'], 'status' => 'DRAFT', 'customer_document_type' => $data['customerDocumentType'], 'customer_document_number' => $data['customerDocumentNumber'], 'customer_name' => $data['customerName'], 'referenced_serial_number' => $data['referencedSerialNumber'] ?? null, 'total' => $o->total, 'created_at' => now(), 'updated_at' => now()]);
-            $invoice = DB::table('invoices')->where('id', $id)->first();
-            DB::table('xml_documents')->insert(['id' => (string) Str::uuid(), 'invoice_id' => $id, 'generated_xml' => $this->builder->build($invoice, $this->orders->get($o->id))]);
+            DB::table('invoices')->insert(['id' => $id, 'order_id' => $o->id, 'type' => $data['type'], 'serial_number' => $serial, 'status' => 'DRAFT', 'customer_document_type' => $data['customerDocumentType'], 'customer_document_number' => $data['customerDocumentNumber'], 'customer_name' => $data['customerName'], 'referenced_serial_number' => $main ? null : $data['referencedSerialNumber'], 'total' => $o->total, 'created_at' => now(), 'updated_at' => now()]);
+            $this->generateXml($id);
 
             return Api::ok('Comprobante creado', $this->view($id));
         }, 3);
+    }
+
+    /**
+     * Corrige los datos del cliente antes de enviar. Solo en borrador: un comprobante que ya pasó por
+     * el envío pudo llegar a SUNAT, así que su corrección es una nota, no una edición.
+     */
+    public function update(Request $r, string $id)
+    {
+        $data = $r->validate(['customerDocumentType' => 'required|in:'.implode(',', BillingData::DOCUMENT_TYPES), 'customerDocumentNumber' => 'required|string|max:15', 'customerName' => 'required|string|max:255']);
+
+        return DB::transaction(function () use ($id, $data) {
+            $invoice = DB::table('invoices')->where('id', $id)->lockForUpdate()->first();
+            abort_unless($invoice, 404, 'Comprobante no encontrado');
+            abort_unless($invoice->status === 'DRAFT', 409, 'Solo se corrigen comprobantes en borrador');
+            $data = $this->customer($data + ['type' => $invoice->type], DB::table('orders')->where('id', $invoice->order_id)->first());
+            DB::table('invoices')->where('id', $id)->update(['customer_document_type' => $data['customerDocumentType'], 'customer_document_number' => $data['customerDocumentNumber'], 'customer_name' => $data['customerName'], 'updated_at' => now()]);
+            $this->generateXml($id);
+
+            return Api::ok('Comprobante corregido', $this->view($id));
+        });
+    }
+
+    public function series()
+    {
+        return Api::ok('Series', $this->numbering->all());
+    }
+
+    /** Alta de una serie; `startAfter` continúa una numeración usada fuera del sistema. */
+    public function createSeries(Request $r)
+    {
+        $data = $r->validate(['type' => 'required|in:01,03,07,08', 'series' => ['required', self::SERIES], 'startAfter' => 'nullable|integer|min:0|max:'.(InvoiceNumbering::MAX_NUMBER - 1)]);
+
+        return Api::ok('Serie registrada', $this->numbering->create($data['type'], $data['series'], (int) ($data['startAfter'] ?? 0)));
+    }
+
+    public function updateSeries(Request $r, int $id)
+    {
+        $data = $r->validate(['active' => 'required|boolean']);
+
+        return Api::ok('Serie actualizada', $this->numbering->setActive($id, (bool) $data['active']));
     }
 
     /** Completa el cliente desde el pedido y aplica las mismas reglas de documento que el checkout. */
@@ -53,6 +109,12 @@ class InvoiceController
         abort_if($error !== null, 422, $error ?? '');
 
         return $data;
+    }
+
+    private function generateXml(string $id): void
+    {
+        $invoice = DB::table('invoices')->where('id', $id)->first();
+        DB::table('xml_documents')->updateOrInsert(['invoice_id' => $id], ['id' => DB::table('xml_documents')->where('invoice_id', $id)->value('id') ?? (string) Str::uuid(), 'generated_xml' => $this->builder->build($invoice, $this->orders->get($invoice->order_id)), 'signed_xml' => null]);
     }
 
     public function show(string $id)
@@ -93,6 +155,8 @@ class InvoiceController
         abort_unless($i, 404, 'Comprobante no encontrado');
         $c = DB::table('cdr_responses')->where('invoice_id', $id)->first();
 
-        return ['id' => $i->id, 'orderId' => $i->order_id, 'type' => $i->type, 'serialNumber' => $i->serial_number, 'status' => $i->status, 'error' => $i->error, 'sunatCode' => $c?->response_code, 'sunatDescription' => $c?->description];
+        return ['id' => $i->id, 'orderId' => $i->order_id, 'type' => $i->type, 'serialNumber' => $i->serial_number, 'status' => $i->status, 'error' => $i->error, 'sunatCode' => $c?->response_code, 'sunatDescription' => $c?->description,
+            'customerDocumentType' => $i->customer_document_type, 'customerDocumentNumber' => $i->customer_document_number, 'customerName' => $i->customer_name,
+            'referencedSerialNumber' => $i->referenced_serial_number, 'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at)];
     }
 }

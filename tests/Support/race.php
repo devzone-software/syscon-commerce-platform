@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Modules\Invoices\InvoiceController;
 use App\Modules\Orders\OrderService;
 use App\Modules\Payments\PaymentController;
 use Illuminate\Contracts\Console\Kernel;
@@ -14,6 +15,7 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  *   confirm <payment> <admin>
  *   cancel  <order> <admin>
  *   expire
+ *   invoice <order>   (boleta; imprime la serie-correlativo asignada)
  * Prints CREATED/OK, CONFLICT (HTTP 409) or, for expire, the number of expired orders.
  */
 require dirname(__DIR__, 2).'/vendor/autoload.php';
@@ -48,6 +50,10 @@ try {
             break;
         case 'expire':
             echo app(OrderService::class)->expireDue();
+            break;
+        case 'invoice':
+            $request = Request::create('/', 'POST', ['orderId' => $args[0], 'type' => '03']);
+            echo app(InvoiceController::class)->store($request)->getData(true)['data']['serialNumber'];
             break;
         default:
             fwrite(STDERR, "Acción desconocida: $action");

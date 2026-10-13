@@ -64,7 +64,7 @@ class CommerceTest extends TestCase
 
     private function invoiceInput(string $order): array
     {
-        return ['orderId' => $order, 'type' => '01', 'serialNumber' => 'F001-1', 'customerDocumentType' => '6', 'customerDocumentNumber' => self::RUC, 'customerName' => 'Cliente & Cía'];
+        return ['orderId' => $order, 'type' => '01', 'customerDocumentType' => '6', 'customerDocumentNumber' => self::RUC, 'customerName' => 'Cliente & Cía'];
     }
 
     public function test_authentication_rotation_logout_and_role_protection(): void
@@ -406,7 +406,7 @@ class CommerceTest extends TestCase
         $admin = $this->token('ADMIN');
         $o = $this->order($h, $this->product(), 1, self::BILLING, ['method' => 'DELIVERY', 'address' => 'Jr. Las Flores 245', 'district' => 'Miraflores'] + self::PICKUP);
         app(OrderService::class)->transition($o['id'], 'PAID');
-        $invoice = $this->postJson('/api/invoices', ['orderId' => $o['id'], 'type' => '03', 'serialNumber' => 'B001-5'], $admin)->assertOk()->json('data');
+        $invoice = $this->postJson('/api/invoices', ['orderId' => $o['id'], 'type' => '03'], $admin)->assertOk()->json('data');
         $xml = DB::table('xml_documents')->where('invoice_id', $invoice['id'])->value('generated_xml');
         $doc = new \DOMDocument;
         $doc->loadXML($xml);
@@ -428,11 +428,11 @@ class CommerceTest extends TestCase
     public function test_invoice_prefills_customer_from_order_billing_and_validates_document(): void
     {
         [$order, $admin] = $this->paidOrder();
-        $base = ['orderId' => $order['id'], 'type' => '01', 'serialNumber' => 'F001-9'];
+        $base = ['orderId' => $order['id'], 'type' => '01'];
         // El pedido se compró con boleta/DNI: una factura necesita RUC explícito.
         $this->postJson('/api/invoices', $base, $admin)->assertUnprocessable();
         $this->postJson('/api/invoices', $base + ['customerDocumentType' => '6', 'customerDocumentNumber' => '20123456789'], $admin)->assertUnprocessable();
-        $boleta = $this->postJson('/api/invoices', ['type' => '03', 'serialNumber' => 'B001-9'] + $base, $admin)->assertOk()->json('data');
+        $boleta = $this->postJson('/api/invoices', ['type' => '03'] + $base, $admin)->assertOk()->assertJsonPath('data.serialNumber', 'B001-1')->json('data');
         $this->assertDatabaseHas('invoices', ['id' => $boleta['id'], 'customer_document_type' => '1', 'customer_document_number' => '12345678', 'customer_name' => 'Ana Quispe']);
     }
 
@@ -445,8 +445,11 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices', $this->invoiceInput($o['id']), $admin)->assertConflict();
         app(OrderService::class)->transition($o['id'], 'PAID');
         $input = $this->invoiceInput($o['id']);
-        $i = $this->postJson('/api/invoices', $input, $admin)->assertOk()->assertJsonPath('data.status', 'DRAFT')->json('data');
-        $this->postJson('/api/invoices', $input, $admin)->assertConflict();
+        $i = $this->postJson('/api/invoices', $input, $admin)->assertOk()->assertJsonPath('data.status', 'DRAFT')->assertJsonPath('data.serialNumber', 'F001-1')->json('data');
+        // Reintento: devuelve el mismo comprobante sin consumir otro correlativo.
+        $this->postJson('/api/invoices', $input, $admin)->assertOk()->assertJsonPath('message', 'Comprobante ya registrado')->assertJsonPath('data.id', $i['id']);
+        $this->postJson('/api/invoices', ['type' => '03'] + $input, $admin)->assertConflict();
+        $this->assertDatabaseHas('invoice_series', ['type' => '01', 'series' => 'F001', 'last_number' => 1]);
         $xml = DB::table('xml_documents')->where('invoice_id', $i['id'])->value('generated_xml');
         $doc = new \DOMDocument;
         $this->assertTrue($doc->loadXML($xml));
@@ -454,10 +457,10 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertStatus(503);
         $this->assertDatabaseHas('invoices', ['id' => $i['id'], 'status' => 'DRAFT']);
         $input['type'] = '07';
-        $input['serialNumber'] = 'F001-2';
         $this->postJson('/api/invoices', $input, $admin)->assertUnprocessable();
         $input['referencedSerialNumber'] = 'F001-1';
         $this->postJson('/api/invoices', $input, $admin)->assertConflict();
+        $this->assertDatabaseHas('invoice_series', ['type' => '07', 'series' => 'FC01', 'last_number' => 0]);
     }
 
     public function test_invoice_submission_records_cdr_and_is_idempotent(): void
@@ -473,9 +476,59 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED');
         $input = $this->invoiceInput($o['id']);
         $input['type'] = '07';
-        $input['serialNumber'] = 'F001-2';
         $input['referencedSerialNumber'] = 'F001-1';
-        $this->postJson('/api/invoices', $input, $admin)->assertOk();
+        $this->postJson('/api/invoices', ['series' => 'BC01'] + $input, $admin)->assertUnprocessable();
+        // La nota de una factura toma la serie de notas que empieza con F.
+        $this->postJson('/api/invoices', $input, $admin)->assertOk()->assertJsonPath('data.serialNumber', 'FC01-1')->assertJsonPath('data.referencedSerialNumber', 'F001-1');
+        $this->patchJson('/api/invoices/'.$i['id'], ['customerDocumentType' => '6', 'customerDocumentNumber' => self::RUC, 'customerName' => 'Otro'], $admin)->assertConflict();
+    }
+
+    public function test_invoice_numbers_are_sequential_per_series_and_configurable(): void
+    {
+        $admin = $this->token('ADMIN');
+        $serials = [];
+        foreach (range(1, 3) as $n) {
+            [$order] = $this->paidOrder();
+            $serials[] = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data.serialNumber');
+        }
+        $this->assertSame(['B001-1', 'B001-2', 'B001-3'], $serials);
+
+        $this->getJson('/api/invoices/series', $this->token())->assertForbidden();
+        $this->postJson('/api/invoices/series', ['type' => '03', 'series' => 'F002'], $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices/series', ['type' => '03', 'series' => 'B001'], $admin)->assertConflict();
+        // Una serie que viene de otro sistema continúa desde su último número.
+        $b002 = $this->postJson('/api/invoices/series', ['type' => '03', 'series' => 'B002', 'startAfter' => 120], $admin)->assertOk()
+            ->assertJsonPath('data.nextNumber', 'B002-121')->json('data');
+        [$order] = $this->paidOrder();
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03', 'series' => 'B002'], $admin)->assertOk()->assertJsonPath('data.serialNumber', 'B002-121');
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03', 'series' => 'B002'], $admin)->assertOk()->assertJsonPath('data.serialNumber', 'B002-121');
+
+        $b001 = collect($this->getJson('/api/invoices/series', $admin)->assertOk()->json('data'))->firstWhere('series', 'B001');
+        $this->assertSame(['lastNumber' => 3, 'nextNumber' => 'B001-4', 'active' => true], array_intersect_key($b001, array_flip(['lastNumber', 'nextNumber', 'active'])));
+        $this->patchJson('/api/invoices/series/'.$b001['id'], ['active' => false], $admin)->assertOk()->assertJsonPath('data.active', false);
+        [$order] = $this->paidOrder();
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03', 'series' => 'B001'], $admin)->assertConflict();
+        // Sin serie indicada se usa la siguiente activa; el conflicto anterior no consumió números.
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->assertJsonPath('data.serialNumber', 'B002-122');
+        $this->assertDatabaseHas('invoice_series', ['id' => $b001['id'], 'last_number' => 3]);
+        $this->assertDatabaseHas('invoice_series', ['id' => $b002['id'], 'last_number' => 122]);
+        $this->patchJson('/api/invoices/series/999', ['active' => true], $admin)->assertNotFound();
+    }
+
+    public function test_draft_invoice_customer_can_be_corrected_before_submission(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $invoice = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()
+            ->assertJsonPath('data.customerName', 'Ana Quispe')->json('data');
+        $this->patchJson('/api/invoices/'.$invoice['id'], ['customerDocumentType' => '1', 'customerDocumentNumber' => '123', 'customerName' => 'Ana'], $admin)->assertUnprocessable();
+        $this->patchJson('/api/invoices/'.$invoice['id'], ['customerDocumentType' => '1', 'customerDocumentNumber' => '87654321', 'customerName' => 'Ana María Quispe'], $admin)->assertOk()
+            ->assertJsonPath('data.customerName', 'Ana María Quispe')->assertJsonPath('data.serialNumber', $invoice['serialNumber']);
+        $xml = DB::table('xml_documents')->where('invoice_id', $invoice['id'])->value('generated_xml');
+        $this->assertStringContainsString('Ana María Quispe', $xml);
+        $this->assertStringContainsString('87654321', $xml);
+        $this->assertDatabaseCount('xml_documents', 1);
+        // El pedido conserva la copia del momento de compra.
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'billing_name' => 'Ana Quispe']);
     }
 
     public function test_invoice_xml_and_cdr_larger_than_mysql_text_limit_are_preserved(): void

@@ -86,8 +86,8 @@ class UblXmlBuilder
 
     private function party(\DOMElement $parent, string $element, string $number, string $type, string $name): void
     {
-        $party = $this->agg($this->agg($parent,$element),'Party');
-        $this->basic($this->agg($party,'PartyIdentification'),'ID',$number)->setAttribute('schemeID',$type);
-        $this->basic($this->agg($party,'PartyName'),'Name',$name);
+        $party = $this->agg($this->agg($parent, $element), 'Party');
+        $this->basic($this->agg($party, 'PartyIdentification'), 'ID', $number)->setAttribute('schemeID', $type);
+        $this->basic($this->agg($party, 'PartyName'), 'Name', $name);
     }
 }

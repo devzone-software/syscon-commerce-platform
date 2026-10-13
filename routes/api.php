@@ -51,7 +51,11 @@ Route::middleware('jwt')->group(function () {
     });
     Route::prefix('invoices')->middleware('permission:invoices:submit')->controller(InvoiceController::class)->group(function () {
         Route::post('/', 'store');
+        Route::get('series', 'series');
+        Route::post('series', 'createSeries');
+        Route::patch('series/{id}', 'updateSeries')->whereNumber('id');
         Route::get('{id}', 'show')->whereUuid('id');
+        Route::patch('{id}', 'update')->whereUuid('id');
         Route::post('{id}/submit', 'submit')->whereUuid('id');
     });
 });

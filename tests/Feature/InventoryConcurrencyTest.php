@@ -81,6 +81,21 @@ class InventoryConcurrencyTest extends TestCase
         }
     }
 
+    public function test_concurrent_invoices_get_distinct_consecutive_numbers(): void
+    {
+        $admin = $this->user('ADMIN');
+        $orders = [];
+        foreach (range(1, 2) as $n) {
+            [$order, $payment] = $this->pendingOrder();
+            $this->assertSame(['OK'], $this->race([['confirm', $payment, $admin]]));
+            $orders[] = $order;
+        }
+        $results = $this->race([['invoice', $orders[0]], ['invoice', $orders[1]]]);
+        sort($results);
+        $this->assertSame(['B001-1', 'B001-2'], $results);
+        $this->assertDatabaseHas('invoice_series', ['type' => '03', 'series' => 'B001', 'last_number' => 2]);
+    }
+
     /** Either the payment won (order paid, stock consumed) or the release won (stock back, payment void). */
     private function assertOneWinner(string $order, string $payment, string $product, array $results, string $released, array $paidWins, array $releaseWins): void
     {
