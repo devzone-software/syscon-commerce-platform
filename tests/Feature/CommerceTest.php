@@ -73,6 +73,34 @@ class CommerceTest extends TestCase
         $this->postJson('/api/auth/refresh', ['refreshToken' => $new['refreshToken']])->assertUnauthorized();
     }
 
+    public function test_register_stores_profile_and_jwt_carries_identity_claims(): void
+    {
+        $profile = ['email' => 'ana@example.com', 'password' => 'secure-password-123', 'firstName' => 'Ana', 'lastName' => 'Quispe', 'documentType' => 'DNI', 'documentNumber' => '12345678', 'phone' => '987654321'];
+        $id = $this->postJson('/api/auth/register', $profile)->assertCreated()->json('data');
+        $this->assertDatabaseHas('users', ['id' => $id, 'first_name' => 'Ana', 'last_name' => 'Quispe', 'document_type' => 'DNI', 'document_number' => '12345678', 'phone' => '987654321']);
+        $this->postJson('/api/auth/register', ['phone' => '123'] + $profile + ['email' => 'otro@example.com'])->assertUnprocessable();
+        $token = $this->postJson('/api/auth/login', ['email' => 'ana@example.com', 'password' => 'secure-password-123'])->json('data.accessToken');
+        $claims = json_decode(base64_decode(strtr(explode('.', $token)[1], '-_', '+/')), true);
+        $this->assertSame(['ana@example.com', 'Ana', 'Quispe'], [$claims['email'], $claims['given_name'], $claims['family_name']]);
+    }
+
+    public function test_google_login_verifies_audience_and_creates_customer_once(): void
+    {
+        config(['services.google.client_id' => 'web-client']);
+        $claims = ['aud' => 'web-client', 'iss' => 'https://accounts.google.com', 'sub' => 'g-1', 'email' => 'Luis@Gmail.com', 'email_verified' => 'true', 'exp' => (string) (time() + 300), 'given_name' => 'Luis', 'family_name' => 'Rojas'];
+        Http::fake(['oauth2.googleapis.com/*' => Http::sequence()->push($claims)->push($claims)->push(['aud' => 'other-client'] + $claims)->push(['error' => 'invalid_token'], 400)]);
+        $first = $this->postJson('/api/auth/google', ['credential' => 'id-token'])->assertOk()->json('data');
+        $this->assertTrue($first['created']);
+        $this->assertArrayHasKey('refreshToken', $first);
+        $this->postJson('/api/auth/google', ['credential' => 'id-token'])->assertOk()->assertJsonPath('data.created', false);
+        $this->assertDatabaseHas('users', ['email' => 'luis@gmail.com', 'google_sub' => 'g-1', 'first_name' => 'Luis', 'role' => 'CUSTOMER']);
+        $this->assertDatabaseCount('users', 1);
+        $this->postJson('/api/auth/google', ['credential' => 'id-token'])->assertUnauthorized();
+        $this->postJson('/api/auth/google', ['credential' => 'id-token'])->assertUnauthorized();
+        config(['services.google.client_id' => '']);
+        $this->postJson('/api/auth/google', ['credential' => 'id-token'])->assertStatus(503);
+    }
+
     public function test_invalid_jwt_internal_token_and_validation_use_api_envelope(): void
     {
         $this->getJson('/api/auth/me', ['Authorization' => 'Bearer invalid'])->assertUnauthorized()->assertJsonPath('success', false);
