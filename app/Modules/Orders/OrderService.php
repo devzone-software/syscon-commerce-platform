@@ -7,9 +7,10 @@ use Illuminate\Support\Str;
 
 class OrderService
 {
-    public function create(string $customer, array $items): array
+    /** @param array|null $billing Datos ya validados con BillingData; se guardan como copia del momento de compra. */
+    public function create(string $customer, array $items, ?array $billing = null): array
     {
-        return DB::transaction(function () use ($customer, $items) {
+        return DB::transaction(function () use ($customer, $items, $billing) {
             $id = (string) Str::uuid();
             $total = '0.00';
             $details = [];
@@ -23,7 +24,10 @@ class OrderService
                 DB::table('products')->where('id', $p->id)->increment('reserved', $line['quantity']);
                 $details[] = ['id' => (string) Str::uuid(), 'order_id' => $id, 'product_id' => $p->id, 'sku' => $p->sku, 'name' => $p->name, 'quantity' => $line['quantity'], 'unit_price' => $p->price];
             }
-            DB::table('orders')->insert(['id' => $id, 'customer_id' => $customer, 'status' => 'PAYMENT_PENDING', 'total' => $total, 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('orders')->insert(['id' => $id, 'customer_id' => $customer, 'status' => 'PAYMENT_PENDING', 'total' => $total,
+                'billing_type' => $billing['type'] ?? null, 'billing_document_type' => $billing['documentType'] ?? null,
+                'billing_document_number' => $billing['documentNumber'] ?? null, 'billing_name' => $billing['name'] ?? null,
+                'billing_address' => $billing['address'] ?? null, 'created_at' => now(), 'updated_at' => now()]);
             DB::table('order_details')->insert($details);
 
             return $this->get($id);
@@ -35,7 +39,9 @@ class OrderService
         $o = DB::table('orders')->where('id', $id)->first();
         abort_unless($o, 404, 'Pedido no encontrado');
 
-        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'total' => bcadd((string) $o->total, '0', 2), 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2)])->all()];
+        $billing = $o->billing_type === null ? null : ['type' => $o->billing_type, 'documentType' => $o->billing_document_type, 'documentNumber' => $o->billing_document_number, 'name' => $o->billing_name, 'address' => $o->billing_address];
+
+        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'total' => bcadd((string) $o->total, '0', 2), 'billing' => $billing, 'createdAt' => $o->created_at ? date(DATE_ATOM, strtotime((string) $o->created_at)) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2)])->all()];
     }
 
     public function transition(string $id, string $target): array

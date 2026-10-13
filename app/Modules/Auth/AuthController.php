@@ -103,6 +103,14 @@ class AuthController
         return Api::ok('Usuario', $r->user()->id);
     }
 
+    /** Datos del perfil para precargar formularios (p. ej. la facturación del checkout). */
+    public function profile(Request $r)
+    {
+        $u = $r->user();
+
+        return Api::ok('Perfil', ['email' => $u->email, 'firstName' => $u->first_name, 'lastName' => $u->last_name, 'documentType' => $u->document_type, 'documentNumber' => $u->document_number, 'phone' => $u->phone]);
+    }
+
     private function issue(User $user): array
     {
         $secret = config('commerce.jwt_secret');
