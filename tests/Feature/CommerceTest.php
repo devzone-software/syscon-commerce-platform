@@ -583,7 +583,7 @@ class CommerceTest extends TestCase
         $doc = new \DOMDocument;
         $this->assertTrue($doc->loadXML($xml));
         $this->assertStringContainsString('Cliente &amp; Cía', $xml);
-        $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertStatus(503);
+        $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertStatus(503)->assertJsonPath('message', 'Credenciales SUNAT no configuradas');
         $this->assertDatabaseHas('invoices', ['id' => $i['id'], 'status' => 'DRAFT']);
         $input = ['type' => '07', 'noteCode' => '01', 'noteReason' => 'Anulación de la operación'] + $input;
         $this->postJson('/api/invoices', $input, $admin)->assertUnprocessable();

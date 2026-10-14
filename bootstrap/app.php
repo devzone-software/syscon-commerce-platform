@@ -31,7 +31,8 @@ return Application::configure(basePath: dirname(__DIR__))
                 $e instanceof UniqueConstraintViolationException => 409,
                 $e instanceof HttpExceptionInterface => $e->getStatusCode(), default => 500,
             };
-            $message = $status >= 500 && ! config('app.debug') ? 'Servicio no disponible' : ($e->getMessage() ?: 'Error');
+            // Los errores inesperados no exponen detalles; los abort() del código llevan un mensaje pensado para el usuario.
+            $message = $status >= 500 && ! $e instanceof HttpExceptionInterface && ! config('app.debug') ? 'Servicio no disponible' : ($e->getMessage() ?: 'Error');
             if ($e instanceof UniqueConstraintViolationException) {
                 $message = 'Registro duplicado';
             }
