@@ -890,6 +890,11 @@ class CommerceTest extends TestCase
         $this->postJson('/api/admin/sales', ['payment' => ['method' => 'YAPE']] + $sale, $admin)->assertUnprocessable();
         $this->postJson('/api/admin/sales', ['payment' => ['method' => 'BITCOIN']] + $sale, $admin)->assertUnprocessable();
         $this->postJson('/api/admin/sales', ['items' => [['productId' => $product['id'], 'quantity' => 6]]] + $sale, $admin)->assertConflict();
+        // Sin caja abierta no se vende, y el intento no deja reservas.
+        $this->postJson('/api/admin/sales', $sale, $admin)->assertConflict()->assertJsonPath('message', 'Abre tu caja antes de registrar ventas');
+        $this->assertDatabaseHas('products', ['id' => $product['id'], 'stock' => 5, 'reserved' => 0]);
+        $this->assertDatabaseCount('orders', 0);
+        $this->postJson('/api/admin/cash/open', ['openingAmount' => '100.00'], $admin)->assertOk();
 
         $done = $this->postJson('/api/admin/sales', $sale, $admin)->assertOk()->assertJsonPath('message', 'Venta registrada')
             ->assertJsonPath('data.status', 'DELIVERED')->assertJsonPath('data.channel', 'STORE')->assertJsonPath('data.total', '20.30')
@@ -971,5 +976,43 @@ class CommerceTest extends TestCase
         $this->assertDatabaseHas('invoices', ['id' => $first['id'], 'status' => 'ACCEPTED']);
         $this->assertDatabaseHas('invoice_attempts', ['invoice_id' => $first['id'], 'action' => 'RECONCILE', 'result' => 'ACCEPTED', 'actor_id' => null]);
         $this->assertSame(0, app(InvoiceSubmission::class)->reconcilePending());
+    }
+
+    public function test_cash_register_tracks_sales_movements_and_closing_count(): void
+    {
+        $admin = $this->token('ADMIN');
+        $this->getJson('/api/admin/cash/current', $admin)->assertOk()->assertJsonPath('data', null);
+        $this->postJson('/api/admin/cash/movements', ['type' => 'IN', 'amount' => '10', 'reason' => 'Sencillo'], $admin)->assertConflict();
+        $this->postJson('/api/admin/cash/open', ['openingAmount' => '-1'], $admin)->assertUnprocessable();
+        $this->postJson('/api/admin/cash/open', ['openingAmount' => '150.00'], $admin)->assertOk()->assertJsonPath('data.status', 'OPEN');
+        $this->postJson('/api/admin/cash/open', ['openingAmount' => '10.00'], $admin)->assertConflict();
+
+        $product = $this->product(10);
+        $sell = fn (string $method, ?string $reference = null) => $this->postJson('/api/admin/sales', ['items' => [['productId' => $product['id'], 'quantity' => 1]], 'billing' => self::BILLING,
+            'payment' => ['method' => $method, 'reference' => $reference], 'idempotencyKey' => (string) Str::uuid()], $admin)->assertOk();
+        $sell('CASH');
+        $sell('CASH');
+        $sell('CARD', 'VISA-4455');
+        $this->postJson('/api/admin/cash/movements', ['type' => 'IN', 'amount' => '20.00', 'reason' => 'Sencillo del banco'], $admin)->assertOk();
+        $this->postJson('/api/admin/cash/movements', ['type' => 'OUT', 'amount' => '500.00', 'reason' => 'Pago a proveedor'], $admin)->assertUnprocessable();
+        $current = $this->postJson('/api/admin/cash/movements', ['type' => 'OUT', 'amount' => '15.50', 'reason' => 'Compra de bolsas'], $admin)->assertOk()->json('data');
+        // 150 + 2 × 10.15 en efectivo + 20 − 15.50; la tarjeta no entra en el efectivo.
+        $this->assertSame('174.80', $current['expectedCash']);
+        $this->assertEqualsCanonicalizing([['method' => 'CASH', 'payments' => 2, 'total' => '20.30'], ['method' => 'CARD', 'payments' => 1, 'total' => '10.15']], $current['byMethod']);
+        $this->assertCount(3, $current['sales']);
+        $this->assertCount(2, $current['movements']);
+
+        // Otro usuario tiene su propia caja y no ve la del primero.
+        $other = $this->token('ADMIN');
+        $this->getJson('/api/admin/cash/current', $other)->assertOk()->assertJsonPath('data', null);
+        $this->getJson('/api/admin/cash/current', $this->token())->assertForbidden();
+
+        $closed = $this->postJson('/api/admin/cash/close', ['countedCash' => '174.00', 'notes' => 'Faltan 80 céntimos'], $admin)->assertOk()->json('data');
+        $this->assertSame(['CLOSED', '174.80', '174.00', '-0.80'], [$closed['status'], $closed['expectedCash'], $closed['countedCash'], $closed['difference']]);
+        $this->postJson('/api/admin/cash/close', ['countedCash' => '1'], $admin)->assertConflict();
+        $this->postJson('/api/admin/sales', ['items' => [['productId' => $product['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'payment' => ['method' => 'CASH'], 'idempotencyKey' => (string) Str::uuid()], $admin)->assertConflict();
+        $this->getJson('/api/admin/cash/sessions', $admin)->assertOk()->assertJsonPath('data.total', 1)->assertJsonPath('data.items.0.difference', '-0.80');
+        // Una caja nueva empieza de cero.
+        $this->postJson('/api/admin/cash/open', ['openingAmount' => '50'], $admin)->assertOk()->assertJsonPath('data.expectedCash', '50.00');
     }
 }

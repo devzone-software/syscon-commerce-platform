@@ -49,11 +49,14 @@ class SaleController
 
                 return Api::ok('Venta ya registrada', $this->view($order['id']));
             }
+            // Cada cobro en tienda pertenece a la caja abierta de quien vende.
+            $session = CashController::openFor($seller, true);
+            abort_unless($session, 409, 'Abre tu caja antes de registrar ventas');
             $method = $data['payment']['method'];
             $reference = trim((string) ($input['payment']['reference'] ?? '')) ?: null;
             $paymentId = (string) Str::uuid();
             DB::table('payments')->insert(['id' => $paymentId, 'order_id' => $order['id'], 'customer_id' => $customer, 'provider' => $method, 'status' => 'APPROVED',
-                'amount' => $order['total'], 'external_reference' => $reference, 'confirmed_by' => $seller, 'confirmed_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+                'amount' => $order['total'], 'external_reference' => $reference, 'confirmed_by' => $seller, 'confirmed_at' => now(), 'cash_session_id' => $session->id, 'created_at' => now(), 'updated_at' => now()]);
             $this->orders->transition($order['id'], 'PAID', $seller, $reference ?? $method);
             // El cliente se lleva los productos: el pedido queda entregado.
             DB::table('orders')->where('id', $order['id'])->update(['status' => 'DELIVERED', 'updated_at' => now()]);

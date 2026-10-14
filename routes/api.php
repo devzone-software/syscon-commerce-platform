@@ -4,6 +4,7 @@ use App\Modules\Auth\AuthController;
 use App\Modules\Catalog\CatalogController;
 use App\Modules\Invoices\InvoiceController;
 use App\Modules\Orders\AdminOrderController;
+use App\Modules\Orders\CashController;
 use App\Modules\Orders\OrderController;
 use App\Modules\Orders\SaleController;
 use App\Modules\Payments\PaymentController;
@@ -47,6 +48,13 @@ Route::middleware('jwt')->group(function () {
         Route::get('reports/sales', [ReportController::class, 'sales'])->middleware('permission:reports:view');
         Route::post('sales', [SaleController::class, 'store'])->middleware('permission:sales:create');
         Route::get('customers', [SaleController::class, 'customers'])->middleware('permission:sales:create');
+        Route::prefix('cash')->middleware('permission:sales:create')->controller(CashController::class)->group(function () {
+            Route::get('current', 'current');
+            Route::post('open', 'open');
+            Route::post('movements', 'movement');
+            Route::post('close', 'close');
+            Route::get('sessions', 'sessions');
+        });
         Route::post('notifications/{id}/resend', [AdminOrderController::class, 'resendNotification'])->middleware('permission:orders:manage')->whereUuid('id');
     });
     Route::post('payments', [PaymentController::class, 'store']);
