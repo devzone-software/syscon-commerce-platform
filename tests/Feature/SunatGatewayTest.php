@@ -21,8 +21,8 @@ class SunatGatewayTest extends TestCase
         file_put_contents($path, $bytes);
         config(['commerce.sunat.certificate' => $path, 'commerce.sunat.certificate_password' => 'certificate-password']);
         try {
-            $invoice = (object) ['type' => '01', 'serial_number' => 'F001-1', 'customer_document_number' => '20123456789', 'customer_document_type' => '6', 'customer_name' => 'Test', 'referenced_serial_number' => null];
-            $xml = app(UblXmlBuilder::class)->build($invoice, ['total' => '10.00', 'details' => [['name' => 'Producto & test', 'quantity' => 1, 'unitPrice' => '10.00']]]);
+            $invoice = (object) ['type' => '01', 'serial_number' => 'F001-1', 'customer_document_number' => '20123456789', 'customer_document_type' => '6', 'customer_name' => 'Test', 'referenced_serial_number' => null, 'created_at' => now(), 'tax_rate' => '0.1800', 'taxable_amount' => '8.47', 'tax_amount' => '1.53', 'total' => '10.00'];
+            $xml = app(UblXmlBuilder::class)->build($invoice, [['line_number' => 1, 'sku' => 'SKU-1', 'description' => 'Producto & test', 'unit_code' => 'NIU', 'quantity' => 1, 'unit_price' => '10.00', 'taxable_amount' => '8.47', 'tax_amount' => '1.53']]);
             $signed = app(SunatGateway::class)->sign($xml);
             $doc = new \DOMDocument;
             $doc->loadXML($signed);

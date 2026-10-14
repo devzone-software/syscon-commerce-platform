@@ -13,10 +13,14 @@ return [
     'orders' => ['reservation_hours' => (int) env('ORDER_RESERVATION_HOURS', 48)],
     // Texto que ve el cliente en su solicitud de pago manual (cuentas, CCI, a quién avisar).
     'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', ''))],
+    // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.
+    'tax' => ['igv_rate' => env('IGV_RATE', '0.18')],
     'sunat' => [
         'ruc' => env('SUNAT_RUC', ''), 'legal_name' => env('SUNAT_LEGAL_NAME', 'SYSCON'),
         'user' => env('SUNAT_SOL_USER', ''), 'password' => env('SUNAT_SOL_PASSWORD', ''),
         'certificate' => env('SUNAT_CERTIFICATE_PATH', ''), 'certificate_password' => env('SUNAT_CERTIFICATE_PASSWORD', ''),
         'endpoint' => env('SUNAT_ENDPOINT', 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService'),
+        // Código del establecimiento anexo que emite (0000: domicilio fiscal).
+        'establishment_code' => env('SUNAT_ESTABLISHMENT_CODE', '0000'),
     ],
 ];

@@ -410,10 +410,132 @@ class CommerceTest extends TestCase
         $xml = DB::table('xml_documents')->where('invoice_id', $invoice['id'])->value('generated_xml');
         $doc = new \DOMDocument;
         $doc->loadXML($xml);
+        // Valores sin IGV: el total del documento y luego cada línea (producto y envío).
         $lines = array_map(fn ($n) => $n->textContent, iterator_to_array($doc->getElementsByTagName('LineExtensionAmount')));
-        $this->assertSame(['10.15', '12.50'], $lines);
+        $this->assertSame(['19.19', '8.60', '10.59'], $lines);
         $this->assertSame('22.65', $doc->getElementsByTagName('PayableAmount')->item(0)->textContent);
         $this->assertStringContainsString('Servicio de envío a domicilio', $xml);
+        $this->assertSame(['taxableAmount' => '19.19', 'taxAmount' => '3.46', 'total' => '22.65'], array_intersect_key($invoice, array_flip(['taxableAmount', 'taxAmount', 'total'])));
+        $this->assertSame(['ZZ', '12.50', '1.91'], [$invoice['lines'][1]['unitCode'], $invoice['lines'][1]['lineTotal'], $invoice['lines'][1]['taxAmount']]);
+    }
+
+    public function test_order_and_invoice_split_igv_per_line_and_document(): void
+    {
+        $h = $this->token();
+        $order = $this->order($h, $this->product(), 3);
+        // 3 × 10.15 = 30.45 con IGV: base 30.45 / 1.18 = 25.81 y el IGV es la diferencia.
+        $this->assertSame(['rate' => '0.1800', 'taxableAmount' => '25.81', 'taxAmount' => '4.64'], $order['taxes']);
+        $this->assertSame(['lineTotal' => '30.45', 'taxableAmount' => '25.81', 'taxAmount' => '4.64'], array_intersect_key($order['details'][0], array_flip(['lineTotal', 'taxableAmount', 'taxAmount'])));
+        $this->assertSame('30.45', $order['total']);
+
+        $admin = $this->token('ADMIN');
+        app(OrderService::class)->transition($order['id'], 'PAID');
+        $invoice = $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->json('data');
+        $doc = new \DOMDocument;
+        $doc->loadXML(DB::table('xml_documents')->where('invoice_id', $invoice['id'])->value('generated_xml'));
+        $x = new \DOMXPath($doc);
+        $x->registerNamespace('cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
+        $x->registerNamespace('cac', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
+        $value = fn (string $path) => $x->evaluate('string('.$path.')');
+        $this->assertSame('0101', $value('/*/cbc:InvoiceTypeCode/@listID'));
+        $this->assertSame('4.64', $value('/*/cac:TaxTotal/cbc:TaxAmount'));
+        $this->assertSame('25.81', $value('/*/cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'));
+        $this->assertSame('1000', $value('/*/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cac:TaxScheme/cbc:ID'));
+        $this->assertSame('30.45', $value('/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'));
+        $this->assertSame('Contado', $value('/*/cac:PaymentTerms/cbc:PaymentMeansID'));
+        $this->assertSame('3', $value('/*/cac:InvoiceLine/cbc:InvoicedQuantity'));
+        $this->assertSame('10.15', $value('/*/cac:InvoiceLine/cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'));
+        $this->assertSame('18', $value('/*/cac:InvoiceLine/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:Percent'));
+        $this->assertSame('10', $value('/*/cac:InvoiceLine/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:TaxExemptionReasonCode'));
+        $this->assertSame('8.6016949153', $value('/*/cac:InvoiceLine/cac:Price/cbc:PriceAmount'));
+        $this->assertSame('SKU-1', $value('/*/cac:InvoiceLine/cac:Item/cac:SellersItemIdentification/cbc:ID'));
+        $this->assertSame(self::RUC, $value('/*/cac:AccountingCustomerParty/cac:Party/cac:PartyIdentification/cbc:ID'));
+        $this->assertSame('Cliente & Cía', $value('/*/cac:AccountingCustomerParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName'));
+        // Una nueva tasa no altera lo ya vendido.
+        config(['commerce.tax.igv_rate' => '0.10']);
+        $this->patchJson('/api/invoices/'.$invoice['id'], ['customerDocumentType' => '6', 'customerDocumentNumber' => self::RUC, 'customerName' => 'Cliente SAC'], $admin)->assertOk()->assertJsonPath('data.taxAmount', '4.64');
+        $this->assertSame('25.81', $this->getJson('/api/orders/'.$order['id'], $h)->json('data.taxes.taxableAmount'));
+    }
+
+    private function acceptSubmissions(): void
+    {
+        $gateway = $this->mock(SunatGateway::class);
+        $gateway->shouldReceive('configured')->andReturn(true);
+        $gateway->shouldReceive('sign')->andReturnUsing(fn ($xml) => $xml);
+        $gateway->shouldReceive('sendBill')->andReturn('CDR');
+        $gateway->shouldReceive('parseCdr')->andReturn(['0', 'Aceptado']);
+    }
+
+    public function test_credit_note_annulment_allows_reissuing_the_receipt(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $this->acceptSubmissions();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data');
+        $note = ['orderId' => $order['id'], 'type' => '07', 'referencedSerialNumber' => $boleta['serialNumber'], 'noteCode' => '01', 'noteReason' => 'El cliente pidió factura'];
+        $this->postJson('/api/invoices', $note, $admin)->assertConflict();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED');
+        $this->postJson('/api/invoices', ['noteCode' => null] + $note, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', ['noteCode' => '05'] + $note, $admin)->assertUnprocessable();
+        $credit = $this->postJson('/api/invoices', $note, $admin)->assertOk()->assertJsonPath('data.serialNumber', 'BC01-1')
+            ->assertJsonPath('data.total', $boleta['total'])->assertJsonPath('data.taxAmount', $boleta['taxAmount'])->assertJsonPath('data.noteCode', '01')->json('data');
+        $this->assertCount(count($boleta['lines']), $credit['lines']);
+        // Reintento: misma nota, sin otro correlativo.
+        $this->postJson('/api/invoices', $note, $admin)->assertOk()->assertJsonPath('data.id', $credit['id']);
+        $this->postJson('/api/invoices', ['noteCode' => '09', 'amount' => '1.00'] + $note, $admin)->assertUnprocessable();
+
+        $doc = new \DOMDocument;
+        $doc->loadXML(DB::table('xml_documents')->where('invoice_id', $credit['id'])->value('generated_xml'));
+        $this->assertSame('CreditNote', $doc->documentElement->localName);
+        $this->assertSame('01', $doc->getElementsByTagName('ResponseCode')->item(0)->textContent);
+        $this->assertSame('El cliente pidió factura', $doc->getElementsByTagName('DiscrepancyResponse')->item(0)->getElementsByTagName('Description')->item(0)->textContent);
+        $this->assertSame('03', $doc->getElementsByTagName('DocumentTypeCode')->item(0)->textContent);
+        $this->assertSame(0, $doc->getElementsByTagName('InvoiceTypeCode')->length);
+
+        // Mientras la anulación no sea aceptada, el pedido sigue facturado con la boleta.
+        $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertConflict();
+        $this->postJson('/api/invoices/'.$credit['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED');
+        $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->assertJsonPath('data.serialNumber', 'F001-1');
+        $events = DB::table('order_events')->where('order_id', $order['id'])->whereIn('type', ['INVOICE_ACCEPTED', 'CREDIT_NOTE_ACCEPTED'])->orderBy('id')->pluck('reference', 'type')->all();
+        $this->assertSame(['INVOICE_ACCEPTED' => 'B001-1', 'CREDIT_NOTE_ACCEPTED' => 'BC01-1'], $events);
+    }
+
+    public function test_partial_credit_and_debit_notes_respect_invoiced_amounts(): void
+    {
+        $customer = $this->token();
+        $admin = $this->token('ADMIN');
+        $product = $this->product();
+        $order = $this->order($customer, $product, 3);
+        app(OrderService::class)->transition($order['id'], 'PAID');
+        $this->acceptSubmissions();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data');
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk();
+        $base = ['orderId' => $order['id'], 'type' => '07', 'referencedSerialNumber' => 'B001-1', 'noteCode' => '07', 'noteReason' => 'Devolución de una unidad'];
+
+        $this->postJson('/api/invoices', $base, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', $base + ['items' => [['productId' => (string) Str::uuid(), 'quantity' => 1]]], $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', $base + ['items' => [['productId' => $product['id'], 'quantity' => 4]]], $admin)->assertUnprocessable();
+        $return = $this->postJson('/api/invoices', $base + ['items' => [['productId' => $product['id'], 'quantity' => 2]]], $admin)->assertOk()->json('data');
+        $this->assertSame(['20.30', '17.20', '3.10'], [$return['total'], $return['taxableAmount'], $return['taxAmount']]);
+        $this->assertSame([2, '10.15', 'NIU'], [$return['lines'][0]['quantity'], $return['lines'][0]['unitPrice'], $return['lines'][0]['unitCode']]);
+        // Ya se devolvieron 2 de 3 unidades.
+        $this->postJson('/api/invoices', $base + ['items' => [['productId' => $product['id'], 'quantity' => 2]]], $admin)->assertUnprocessable();
+        // Una disminución no puede superar lo que queda por acreditar (30.45 − 20.30 = 10.15).
+        $decrease = ['noteCode' => '09', 'noteReason' => 'Descuento posterior'] + $base;
+        $this->postJson('/api/invoices', $decrease, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', ['amount' => '10.16'] + $decrease, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', ['amount' => '10.15'] + $decrease, $admin)->assertOk()->assertJsonPath('data.lines.0.unitCode', 'ZZ')->assertJsonPath('data.lines.0.description', 'Descuento posterior');
+        // Con notas parciales ya no cabe una anulación total.
+        $this->postJson('/api/invoices', ['noteCode' => '01'] + $base, $admin)->assertConflict();
+
+        $debit = ['orderId' => $order['id'], 'type' => '08', 'referencedSerialNumber' => 'B001-1', 'noteCode' => '01', 'noteReason' => 'Intereses por pago tardío'];
+        $this->postJson('/api/invoices', $debit, $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices', ['noteCode' => '07', 'amount' => '5.90'] + $debit, $admin)->assertUnprocessable();
+        $note = $this->postJson('/api/invoices', ['amount' => '5.90'] + $debit, $admin)->assertOk()->assertJsonPath('data.serialNumber', 'BD01-1')->json('data');
+        $this->assertSame(['5.90', '5.00', '0.90'], [$note['total'], $note['taxableAmount'], $note['taxAmount']]);
+        $doc = new \DOMDocument;
+        $doc->loadXML(DB::table('xml_documents')->where('invoice_id', $note['id'])->value('generated_xml'));
+        $this->assertSame('5.90', $doc->getElementsByTagName('RequestedMonetaryTotal')->item(0)->getElementsByTagName('PayableAmount')->item(0)->textContent);
+        $this->assertSame(1, $doc->getElementsByTagName('DebitNoteLine')->length);
     }
 
     public function test_profile_returns_registered_identity(): void
@@ -456,7 +578,7 @@ class CommerceTest extends TestCase
         $this->assertStringContainsString('Cliente &amp; Cía', $xml);
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertStatus(503);
         $this->assertDatabaseHas('invoices', ['id' => $i['id'], 'status' => 'DRAFT']);
-        $input['type'] = '07';
+        $input = ['type' => '07', 'noteCode' => '01', 'noteReason' => 'Anulación de la operación'] + $input;
         $this->postJson('/api/invoices', $input, $admin)->assertUnprocessable();
         $input['referencedSerialNumber'] = 'F001-1';
         $this->postJson('/api/invoices', $input, $admin)->assertConflict();
@@ -475,7 +597,7 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED')->assertJsonPath('data.sunatCode', '0');
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED');
         $input = $this->invoiceInput($o['id']);
-        $input['type'] = '07';
+        $input = ['type' => '07', 'noteCode' => '01', 'noteReason' => 'Anulación de la operación'] + $input;
         $input['referencedSerialNumber'] = 'F001-1';
         $this->postJson('/api/invoices', ['series' => 'BC01'] + $input, $admin)->assertUnprocessable();
         // La nota de una factura toma la serie de notas que empieza con F.

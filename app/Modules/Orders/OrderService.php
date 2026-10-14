@@ -41,20 +41,30 @@ class OrderService
         return DB::transaction(function () use ($customer, $items, $billing, $delivery, $idempotencyKey, $hash) {
             $id = (string) Str::uuid();
             $total = '0.00';
+            $rate = Tax::rate();
+            $taxable = '0.00';
+            $tax = '0.00';
             $details = [];
             // Stable lock order prevents deadlocks between overlapping carts.
             usort($items, fn ($a, $b) => strcmp($a['productId'], $b['productId']));
             foreach ($items as $line) {
                 $p = DB::table('products')->where('id', $line['productId'])->lockForUpdate()->first();
                 abort_unless($p && $p->active && $p->stock - $p->reserved >= $line['quantity'], 409, 'Producto sin stock');
-                $total = bcadd($total, bcmul((string) $p->price, (string) $line['quantity'], 2), 2);
+                $gross = bcmul((string) $p->price, (string) $line['quantity'], 2);
+                $total = bcadd($total, $gross, 2);
                 abort_if(bccomp($total, '999999999999.99', 2) > 0, 422, 'Total de pedido excedido');
                 DB::table('products')->where('id', $p->id)->increment('reserved', $line['quantity']);
-                $details[] = ['id' => (string) Str::uuid(), 'order_id' => $id, 'product_id' => $p->id, 'sku' => $p->sku, 'name' => $p->name, 'quantity' => $line['quantity'], 'unit_price' => $p->price];
+                [$base, $igv] = Tax::split($gross, $rate);
+                $taxable = bcadd($taxable, $base, 2);
+                $tax = bcadd($tax, $igv, 2);
+                $details[] = ['id' => (string) Str::uuid(), 'order_id' => $id, 'product_id' => $p->id, 'sku' => $p->sku, 'name' => $p->name, 'quantity' => $line['quantity'], 'unit_price' => $p->price,
+                    'line_total' => $gross, 'taxable_amount' => $base, 'tax_amount' => $igv];
             }
             $deliveryCost = $delivery ? DeliveryData::cost($delivery['method']) : '0.00';
             $total = bcadd($total, $deliveryCost, 2);
+            [$base, $igv] = Tax::split($deliveryCost, $rate);
             DB::table('orders')->insert(['id' => $id, 'customer_id' => $customer, 'status' => 'PAYMENT_PENDING', 'total' => $total,
+                'tax_rate' => $rate, 'taxable_amount' => bcadd($taxable, $base, 2), 'tax_amount' => bcadd($tax, $igv, 2),
                 'delivery_method' => $delivery['method'] ?? null, 'delivery_cost' => $deliveryCost,
                 'contact_name' => $delivery['contactName'] ?? null, 'contact_phone' => $delivery['contactPhone'] ?? null,
                 'delivery_address' => $delivery['address'] ?? null, 'delivery_district' => $delivery['district'] ?? null,
@@ -139,7 +149,9 @@ class OrderService
         $deliveryCost = bcadd((string) ($o->delivery_cost ?? '0'), '0', 2);
         $delivery = $o->delivery_method === null ? null : ['method' => $o->delivery_method, 'cost' => $deliveryCost, 'contactName' => $o->contact_name, 'contactPhone' => $o->contact_phone, 'address' => $o->delivery_address, 'district' => $o->delivery_district, 'reference' => $o->delivery_reference];
 
-        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2), 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => self::iso($o->created_at), 'expiresAt' => $o->status === 'PAYMENT_PENDING' ? self::iso($o->expires_at) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2)])->all()];
+        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2),
+            'taxes' => ['rate' => bcadd((string) $o->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $o->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $o->tax_amount, '0', 2)], 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => self::iso($o->created_at), 'expiresAt' => $o->status === 'PAYMENT_PENDING' ? self::iso($o->expires_at) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2),
+                'lineTotal' => bcadd((string) $d->line_total, '0', 2), 'taxableAmount' => bcadd((string) $d->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $d->tax_amount, '0', 2)])->all()];
     }
 
     public static function iso(mixed $value): ?string
