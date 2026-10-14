@@ -56,6 +56,9 @@ class ReportService
                 'taxAmount' => self::sum($sales, 'taxAmount'), 'deliveryTotal' => self::sum($sales, 'deliveryCost'),
                 'averageTicket' => $sales->count() ? bcdiv(self::sum($sales, 'total'), (string) $sales->count(), 2) : '0.00',
                 'byDay' => array_values($days),
+                'byChannel' => collect(['WEB', 'STORE'])->mapWithKeys(fn ($c) => [$c => ['orders' => $sales->where('channel', $c)->count(), 'total' => self::sum($sales->where('channel', $c), 'total')]])->all(),
+                // Lo cobrado por medio de pago (MANUAL es el pago por transferencia de la web).
+                'byPaymentMethod' => $sales->flatMap(fn ($s) => $s['payments'])->groupBy('method')->map(fn ($p, $m) => ['method' => $m, 'payments' => $p->count(), 'total' => self::sum($p, 'total')])->values()->all(),
             ],
             'releasedOrders' => collect(['CANCELLED', 'EXPIRED'])->mapWithKeys(fn ($status) => [$status => [
                 'orders' => $released->where('to_status', $status)->count(),
@@ -126,11 +129,12 @@ class ReportService
             ]));
 
             return [
-                'orderId' => $id, 'paidAt' => Carbon::parse($paidAt, config('app.timezone'))->setTimezone(self::TZ), 'status' => $o->status,
+                'orderId' => $id, 'channel' => $o->channel ?? 'WEB', 'paidAt' => Carbon::parse($paidAt, config('app.timezone'))->setTimezone(self::TZ), 'status' => $o->status,
                 'customerEmail' => $o->email, 'billingName' => $o->billing_name, 'billingDocument' => $o->billing_document_number,
                 'total' => $total, 'taxableAmount' => bcadd((string) $o->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $o->tax_amount, '0', 2),
                 'deliveryCost' => bcadd((string) ($o->delivery_cost ?? '0'), '0', 2),
-                'paidAmount' => $paidAmount, 'paymentReferences' => ($payments->get($id) ?? collect())->pluck('external_reference')->filter()->values()->all(),
+                'paidAmount' => $paidAmount, 'payments' => ($payments->get($id) ?? collect())->map(fn ($p) => ['method' => $p->provider, 'total' => bcadd((string) $p->amount, '0', 2)])->values()->all(),
+                'paymentReferences' => ($payments->get($id) ?? collect())->pluck('external_reference')->filter()->values()->all(),
                 'invoices' => $docs->map(fn ($d) => ['id' => $d->id, 'type' => $d->type, 'serialNumber' => $d->serial_number, 'status' => $d->status, 'total' => bcadd((string) $d->total, '0', 2)])->values()->all(),
                 'netInvoiced' => $net,
                 // PAYMENT_MISMATCH: el pago aprobado no es el total; NOT_INVOICED: sin boleta/factura

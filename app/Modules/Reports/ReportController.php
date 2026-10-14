@@ -53,9 +53,9 @@ class ReportController
     {
         $out = fopen('php://temp', 'w+');
         fwrite($out, "\u{FEFF}");
-        fputcsv($out, ['Fecha de pago', 'Pedido', 'Estado', 'Correo', 'Cliente', 'Documento', 'Op. gravada', 'IGV', 'Envío', 'Total', 'Pago aprobado', 'Referencias de pago', 'Comprobantes', 'Facturado neto', 'Observaciones'], ';', '"', '');
+        fputcsv($out, ['Fecha de pago', 'Pedido', 'Canal', 'Estado', 'Correo', 'Cliente', 'Documento', 'Op. gravada', 'IGV', 'Envío', 'Total', 'Pago aprobado', 'Referencias de pago', 'Comprobantes', 'Facturado neto', 'Observaciones'], ';', '"', '');
         foreach ($rows as $row) {
-            fputcsv($out, [$row['paidAt']->format('Y-m-d H:i'), $row['orderId'], $row['status'], $row['customerEmail'], $row['billingName'], $row['billingDocument'],
+            fputcsv($out, [$row['paidAt']->format('Y-m-d H:i'), $row['orderId'], $row['channel'], $row['status'], $row['customerEmail'], $row['billingName'], $row['billingDocument'],
                 $row['taxableAmount'], $row['taxAmount'], $row['deliveryCost'], $row['total'], $row['paidAmount'], implode(' ', $row['paymentReferences']),
                 implode(' ', array_map(fn ($i) => $i['serialNumber'].' ('.$i['status'].')', $row['invoices'])), $row['netInvoiced'], implode(' ', $row['issues'])], ';', '"', '');
         }

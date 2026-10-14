@@ -20,6 +20,6 @@ class User extends Authenticatable
 
     public function permissions(): array
     {
-        return $this->role === 'ADMIN' ? ['catalog:write', 'orders:manage', 'payments:confirm', 'suppliers:manage', 'invoices:submit', 'reports:view'] : [];
+        return $this->role === 'ADMIN' ? ['catalog:write', 'orders:manage', 'payments:confirm', 'suppliers:manage', 'invoices:submit', 'reports:view', 'sales:create'] : [];
     }
 }

@@ -17,15 +17,16 @@ class OrderService
      * @param  array|null  $billing  Datos ya validados con BillingData; se guardan como copia del momento de compra.
      * @param  array|null  $delivery  Datos ya validados con DeliveryData; el costo se calcula aquí, no lo envía el cliente.
      * @param  string|null  $idempotencyKey  Repetir la misma clave devuelve el pedido ya creado en vez de crear otro.
+     * @param  string|null  $seller  Personal que registra una venta directa (canal STORE); null en la web.
      */
-    public function create(string $customer, array $items, ?array $billing = null, ?array $delivery = null, ?string $idempotencyKey = null): array
+    public function create(string $customer, array $items, ?array $billing = null, ?array $delivery = null, ?string $idempotencyKey = null, ?string $seller = null): array
     {
         $hash = hash('sha256', json_encode([$this->canonicalItems($items), $billing, $delivery]));
         if ($idempotencyKey && ($existing = $this->findByKey($customer, $idempotencyKey))) {
             return $this->replay($existing, $hash);
         }
         try {
-            return $this->insert($customer, $items, $billing, $delivery, $idempotencyKey, $hash);
+            return $this->insert($customer, $items, $billing, $delivery, $idempotencyKey, $hash, $seller);
         } catch (UniqueConstraintViolationException $e) {
             // Otra petición con la misma clave ganó la carrera: su transacción ya reservó el stock.
             $existing = $idempotencyKey ? $this->findByKey($customer, $idempotencyKey) : null;
@@ -37,9 +38,9 @@ class OrderService
         }
     }
 
-    private function insert(string $customer, array $items, ?array $billing, ?array $delivery, ?string $idempotencyKey, string $hash): array
+    private function insert(string $customer, array $items, ?array $billing, ?array $delivery, ?string $idempotencyKey, string $hash, ?string $seller): array
     {
-        return DB::transaction(function () use ($customer, $items, $billing, $delivery, $idempotencyKey, $hash) {
+        return DB::transaction(function () use ($customer, $items, $billing, $delivery, $idempotencyKey, $hash, $seller) {
             $id = (string) Str::uuid();
             $total = '0.00';
             $rate = Tax::rate();
@@ -71,12 +72,13 @@ class OrderService
                 'delivery_address' => $delivery['address'] ?? null, 'delivery_district' => $delivery['district'] ?? null,
                 'delivery_reference' => $delivery['reference'] ?? null,
                 'idempotency_key' => $idempotencyKey, 'request_hash' => $idempotencyKey ? $hash : null,
+                'channel' => $seller ? 'STORE' : 'WEB', 'seller_id' => $seller,
                 'billing_type' => $billing['type'] ?? null, 'billing_document_type' => $billing['documentType'] ?? null,
                 'billing_document_number' => $billing['documentNumber'] ?? null, 'billing_name' => $billing['name'] ?? null,
                 'billing_address' => $billing['address'] ?? null, 'expires_at' => self::reservationDeadline(),
                 'created_at' => now(), 'updated_at' => now()]);
             DB::table('order_details')->insert($details);
-            $this->record($id, $customer, 'CREATED', null, 'PAYMENT_PENDING');
+            $this->record($id, $seller ?? $customer, $seller ? 'STORE_SALE' : 'CREATED', null, 'PAYMENT_PENDING');
             // Se resuelve aquí: Notifier también depende de este servicio.
             app(Notifier::class)->queue($id, 'ORDER_CREATED');
 
@@ -152,7 +154,7 @@ class OrderService
         $deliveryCost = bcadd((string) ($o->delivery_cost ?? '0'), '0', 2);
         $delivery = $o->delivery_method === null ? null : ['method' => $o->delivery_method, 'cost' => $deliveryCost, 'contactName' => $o->contact_name, 'contactPhone' => $o->contact_phone, 'address' => $o->delivery_address, 'district' => $o->delivery_district, 'reference' => $o->delivery_reference];
 
-        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2),
+        return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'channel' => $o->channel ?? 'WEB', 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2),
             'taxes' => ['rate' => bcadd((string) $o->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $o->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $o->tax_amount, '0', 2)], 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => self::iso($o->created_at), 'expiresAt' => $o->status === 'PAYMENT_PENDING' ? self::iso($o->expires_at) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2),
                 'lineTotal' => bcadd((string) $d->line_total, '0', 2), 'taxableAmount' => bcadd((string) $d->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $d->tax_amount, '0', 2)])->all()];
     }

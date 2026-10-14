@@ -4,6 +4,7 @@ namespace App\Modules\Notifications;
 
 use App\Modules\Invoices\InvoiceFiles;
 use App\Modules\Orders\OrderService;
+use App\Modules\Orders\SaleController;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -26,8 +27,10 @@ class Notifier
     /** Registra el aviso (una sola vez por pedido, tipo y comprobante) y lo envía tras el commit. */
     public function queue(string $orderId, string $type, string $reference = ''): void
     {
-        $recipient = DB::table('orders')->join('users', 'users.id', '=', 'orders.customer_id')->where('orders.id', $orderId)->value('users.email');
-        if (! $recipient) {
+        $customer = DB::table('orders')->join('users', 'users.id', '=', 'orders.customer_id')->where('orders.id', $orderId)->first(['users.email', 'users.role']);
+        $recipient = $customer?->email;
+        // La cuenta de mostrador no es de una persona: no recibe correos.
+        if (! $recipient || $customer->role === SaleController::WALK_IN_ROLE) {
             return;
         }
         $id = (string) Str::uuid();

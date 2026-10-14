@@ -846,8 +846,10 @@ class CommerceTest extends TestCase
         $period = '?from=2026-10-13&to=2026-10-13';
         $this->getJson('/api/admin/reports/summary'.$period, $customer)->assertForbidden();
         $summary = $this->getJson('/api/admin/reports/summary'.$period, $admin)->assertOk()->json('data');
-        $this->assertSame(['orders' => 4, 'total' => '81.20', 'taxableAmount' => '68.80', 'taxAmount' => '12.40', 'deliveryTotal' => '0.00', 'averageTicket' => '20.30'], array_diff_key($summary['sales'], ['byDay' => 1]));
+        $this->assertSame(['orders' => 4, 'total' => '81.20', 'taxableAmount' => '68.80', 'taxAmount' => '12.40', 'deliveryTotal' => '0.00', 'averageTicket' => '20.30'], array_diff_key($summary['sales'], ['byDay' => 1, 'byChannel' => 1, 'byPaymentMethod' => 1]));
         $this->assertSame([['date' => '2026-10-13', 'orders' => 4, 'total' => '81.20']], $summary['sales']['byDay']);
+        $this->assertSame(['orders' => 4, 'total' => '81.20'], $summary['sales']['byChannel']['WEB']);
+        $this->assertSame([['method' => 'MANUAL', 'payments' => 3, 'total' => '60.90']], $summary['sales']['byPaymentMethod']);
         $this->assertSame(['orders' => 1, 'total' => '20.30'], $summary['releasedOrders']['CANCELLED']);
         $this->assertSame([1, '20.30'], [$summary['pendingPayments']['orders'], $summary['pendingPayments']['total']]);
         $this->assertSame(2, $summary['reservations']['units']);
@@ -868,10 +870,54 @@ class CommerceTest extends TestCase
         $csv = $this->get('/api/admin/reports/sales'.$period.'&format=csv', $admin)->assertOk()->assertHeader('Content-Type', 'text/csv; charset=UTF-8');
         $lines = explode("\n", trim($csv->getContent()));
         $this->assertCount(5, $lines);
-        $this->assertStringStartsWith("\u{FEFF}\"Fecha de pago\";Pedido;Estado;", $lines[0]);
+        $this->assertStringStartsWith("\u{FEFF}\"Fecha de pago\";Pedido;Canal;Estado;", $lines[0]);
         $this->assertStringContainsString('B001-1 (ACCEPTED)', $csv->getContent());
         $this->getJson('/api/admin/reports/summary?from=2025-01-01&to=2026-10-13', $admin)->assertUnprocessable();
         $this->getJson('/api/admin/reports/summary?from=2026-10-13&to=2026-10-01', $admin)->assertUnprocessable();
         $this->getJson('/api/admin/reports/summary', $admin)->assertOk()->assertJsonPath('data.period.timezone', 'America/Lima');
+    }
+
+    public function test_direct_sale_charges_delivers_and_consumes_stock_in_one_step(): void
+    {
+        Mail::fake();
+        $admin = $this->token('ADMIN');
+        $product = $this->product(5);
+        $sale = ['items' => [['productId' => $product['id'], 'quantity' => 2]], 'billing' => self::BILLING, 'payment' => ['method' => 'CASH'], 'idempotencyKey' => (string) Str::uuid()];
+        $this->postJson('/api/admin/sales', $sale, $this->token())->assertForbidden();
+        $this->postJson('/api/admin/sales', ['payment' => ['method' => 'YAPE']] + $sale, $admin)->assertUnprocessable();
+        $this->postJson('/api/admin/sales', ['payment' => ['method' => 'BITCOIN']] + $sale, $admin)->assertUnprocessable();
+        $this->postJson('/api/admin/sales', ['items' => [['productId' => $product['id'], 'quantity' => 6]]] + $sale, $admin)->assertConflict();
+
+        $done = $this->postJson('/api/admin/sales', $sale, $admin)->assertOk()->assertJsonPath('message', 'Venta registrada')
+            ->assertJsonPath('data.status', 'DELIVERED')->assertJsonPath('data.channel', 'STORE')->assertJsonPath('data.total', '20.30')
+            ->assertJsonPath('data.payment.provider', 'CASH')->assertJsonPath('data.payment.status', 'APPROVED')->json('data');
+        // Reintento con la misma clave: no cobra ni descuenta otra vez.
+        $this->postJson('/api/admin/sales', $sale, $admin)->assertOk()->assertJsonPath('message', 'Venta ya registrada')->assertJsonPath('data.id', $done['id']);
+        $this->assertDatabaseHas('products', ['id' => $product['id'], 'stock' => 3, 'reserved' => 0]);
+        $this->assertDatabaseCount('payments', 1);
+        // La cuenta de mostrador no recibe correos ni puede iniciar sesión con permisos.
+        $walkIn = DB::table('users')->where('email', 'mostrador@syscon.local')->first();
+        $this->assertSame([$walkIn->id, 'WALK_IN'], [$done['customerId'], $walkIn->role]);
+        Mail::assertNothingSent();
+        $this->assertDatabaseCount('notifications', 0);
+        $events = DB::table('order_events')->where('order_id', $done['id'])->orderBy('id')->pluck('type')->all();
+        $this->assertSame(['STORE_SALE', 'PAYMENT_CONFIRMED', 'STATUS_CHANGED'], $events);
+
+        // Venta a un cliente registrado, con Yape: lleva referencia y le llegan los correos.
+        $this->postJson('/api/auth/register', ['email' => 'luz@example.com', 'password' => 'secure-password-123', 'firstName' => 'Luz', 'lastName' => 'Paz', 'documentType' => 'DNI', 'documentNumber' => '87654321'])->assertCreated();
+        $this->getJson('/api/admin/customers?q=a', $admin)->assertUnprocessable();
+        $found = $this->getJson('/api/admin/customers?q=87654321', $admin)->assertOk()->assertJsonCount(1, 'data')->json('data.0');
+        $this->assertSame(['luz@example.com', 'Luz Paz'], [$found['email'], $found['name']]);
+        $this->assertSame([], $this->getJson('/api/admin/customers?q=mostrador', $admin)->json('data'));
+        $this->postJson('/api/admin/sales', ['customerId' => (string) Str::uuid(), 'idempotencyKey' => (string) Str::uuid()] + $sale, $admin)->assertUnprocessable();
+        $second = $this->postJson('/api/admin/sales', ['customerId' => $found['id'], 'payment' => ['method' => 'YAPE', 'reference' => 'YP-778899'], 'idempotencyKey' => (string) Str::uuid()] + $sale, $admin)
+            ->assertOk()->assertJsonPath('data.payment.externalReference', 'YP-778899')->json('data');
+        Mail::assertSent(OrderMail::class, fn ($m) => $m->kind === 'PAYMENT_CONFIRMED' && $m->hasTo('luz@example.com'));
+
+        // El comprobante se emite igual que en la web, y el reporte separa el canal y el medio de pago.
+        $this->postJson('/api/invoices', ['orderId' => $second['id'], 'type' => '03'], $admin)->assertOk()->assertJsonPath('data.total', '20.30');
+        $summary = $this->getJson('/api/admin/reports/summary', $admin)->assertOk()->json('data.sales');
+        $this->assertSame(['orders' => 2, 'total' => '40.60'], $summary['byChannel']['STORE']);
+        $this->assertEqualsCanonicalizing([['method' => 'CASH', 'payments' => 1, 'total' => '20.30'], ['method' => 'YAPE', 'payments' => 1, 'total' => '20.30']], $summary['byPaymentMethod']);
     }
 }
