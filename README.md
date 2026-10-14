@@ -102,6 +102,10 @@ Tipos: 01 factura, 03 boleta, 07 nota de crédito, 08 nota de débito. Las notas
 
 El servicio beta (`SUNAT_ENDPOINT` por defecto) acepta el RUC público de prueba `20000000001`, el usuario SOL `MODDATOS` / `moddatos` y un certificado autofirmado. `php artisan sunat:test-certificate` genera el certificado en `certificates/` (fuera de git) e imprime las variables para el `.env`. El 14 de octubre de 2026 el beta aceptó una boleta, una factura, una nota de crédito por ítem y una nota de débito generadas por esta API. Lo aceptado en beta no tiene valor tributario: el PDF lo indica. PHP necesita un bundle de CA (`curl.cainfo` y `openssl.cafile` en php.ini) para verificar el HTTPS de SUNAT; no se desactiva la verificación.
 
+Anulación sin nota de crédito: `POST /api/invoices/{id}/void` envía una comunicación de baja (RA) para la serie F o un resumen diario con estado anulado (RC) para la serie B, dentro de 7 días de emitido y sin notas vigentes. SUNAT responde con un ticket que se consulta al momento, con `POST /api/invoices/{id}/void/check` y con el cron `invoices:reconcile`; aceptada, el comprobante queda VOIDED y el pedido se puede volver a facturar.
+
+Sin respuesta de SUNAT (corte o timeout) el comprobante queda PENDING_CHECK: `POST /api/invoices/{id}/reconcile` o el cron consultan el CDR (`SUNAT_CONSULT_ENDPOINT`, solo producción) o reenvían el mismo XML firmado; 1033 (ya registrado) se toma como aceptado.
+
 Respuestas: un CDR con código 0 deja el comprobante ACCEPTED (las observaciones se guardan en la descripción); un SOAP fault 2000–3999 lo deja REJECTED (el número queda usado; se corrige con otro comprobante o una nota); cualquier otro error lo deja FAILED y se puede reintentar con el mismo XML firmado. Hasta la primera firma el XML se regenera con el emisor configurado.
 
 Los precios incluyen IGV (`IGV_RATE`); cada comprobante guarda sus líneas con base e IGV, y el XML y el PDF salen de ellas. SUNAT_ADDRESS es el domicilio impreso en el PDF.
