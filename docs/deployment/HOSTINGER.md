@@ -100,7 +100,7 @@ En **Cron Jobs**, elige Custom y programa cada minuto:
 
 Sustituye la ruta de PHP y la del proyecto por las reales. Si tu plan solo permite intervalos mayores, usa un intervalo que incluya los minutos 0, 15, 30 y 45, por ejemplo cada cinco minutos.
 
-El scheduler envía los correos pendientes (notifications:send) cada minuto, vence pedidos impagos cada cinco y ejecuta suppliers:sync cada quince minutos, con exclusión de solapamiento mediante la caché de base de datos. El callback se ejecuta en el mismo proceso PHP, sin lanzar subprocessos. No hay worker de cola: QUEUE_CONNECTION=sync.
+El scheduler envía los correos pendientes (notifications:send) cada minuto, vence pedidos impagos cada cinco, concilia comprobantes y anulaciones con SUNAT (invoices:reconcile) cada diez y ejecuta suppliers:sync cada quince minutos, con exclusión de solapamiento mediante la caché de base de datos. El callback se ejecuta en el mismo proceso PHP, sin lanzar subprocessos. No hay worker de cola: QUEUE_CONNECTION=sync.
 
 Los correos al cliente usan el SMTP de Hostinger: configura MAIL_MAILER=smtp, MAIL_HOST (smtp.hostinger.com), MAIL_PORT=465, MAIL_SCHEME=smtps, MAIL_USERNAME, MAIL_PASSWORD y MAIL_FROM_ADDRESS con un buzón del dominio, y WEB_URL con la dirección de la tienda. Si el envío falla, el pedido no se altera: el aviso queda registrado y el cron lo reintenta hasta cinco veces; después el administrador puede reenviarlo desde el detalle del pedido.
 
@@ -118,6 +118,8 @@ Las frecuencias dependen de las restricciones y recursos de tu cuenta. Revisa la
 Una base nueva inicia sin productos. El /up comprueba el proceso PHP, no la disponibilidad de MySQL; prueba también catálogo o login.
 
 ## Actualizaciones y certificados SUNAT
+
+La configuración de facturación, las tareas programadas, el respaldo y la recuperación están en [OPERACION.md](OPERACION.md).
 
 Antes de una actualización, respalda MySQL y storage. Sustituye el código y vendor conservando .env, storage y certificados. Desde syscon:
 
