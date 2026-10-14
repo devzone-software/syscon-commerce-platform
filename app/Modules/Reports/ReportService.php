@@ -77,7 +77,7 @@ class ReportService
             ],
             'invoices' => collect(['01', '03', '07', '08'])->map(fn ($type) => [
                 'type' => $type,
-                'byStatus' => collect(['DRAFT', 'FAILED', 'REJECTED', 'ACCEPTED'])->mapWithKeys(fn ($st) => [$st => $invoices->where('type', $type)->where('status', $st)->count()])->all(),
+                'byStatus' => collect(['DRAFT', 'FAILED', 'PENDING_CHECK', 'REJECTED', 'ACCEPTED'])->mapWithKeys(fn ($st) => [$st => $invoices->where('type', $type)->where('status', $st)->count()])->all(),
                 'acceptedTotal' => self::sum($invoices->where('type', $type)->where('status', 'ACCEPTED')->map(fn ($i) => ['total' => (string) $i->total]), 'total'),
             ])->all(),
             'reconciliation' => [
