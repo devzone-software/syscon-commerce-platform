@@ -204,6 +204,11 @@ class InvoiceController
             abort_unless(in_array($invoice->status, ['DRAFT', 'FAILED'], true), 409, 'Estado de comprobante inválido');
             abort_unless($this->gateway->configured(), 503, 'Credenciales SUNAT no configuradas');
             try {
+                // Hasta la primera firma el XML se vuelve a generar: toma el emisor configurado ahora.
+                // Una vez firmado se reenvía el mismo XML, que SUNAT pudo haber recibido.
+                if (DB::table('xml_documents')->where('invoice_id', $id)->value('signed_xml') === null) {
+                    $this->generateXml($id);
+                }
                 $doc = DB::table('xml_documents')->where('invoice_id', $id)->first();
                 $signed = $doc->signed_xml ?? $this->gateway->sign($doc->generated_xml);
                 DB::table('xml_documents')->where('invoice_id', $id)->update(['signed_xml' => $signed]);
@@ -219,6 +224,9 @@ class InvoiceController
                     $this->orders->record($invoice->order_id, $r->user()?->id, $event, null, null, $invoice->serial_number);
                     $this->notifier->queue($invoice->order_id, 'INVOICE_AVAILABLE', $invoice->id);
                 }
+            } catch (SunatFault $e) {
+                // Rechazo por contenido: el número queda usado y se corrige con otro comprobante o nota.
+                DB::table('invoices')->where('id', $id)->update(['status' => $e->rejects() ? 'REJECTED' : 'FAILED', 'error' => mb_substr($e->getMessage(), 0, 1000), 'updated_at' => now()]);
             } catch (\Throwable $e) {
                 DB::table('invoices')->where('id', $id)->update(['status' => 'FAILED', 'error' => mb_substr($e->getMessage(), 0, 1000), 'updated_at' => now()]);
             }

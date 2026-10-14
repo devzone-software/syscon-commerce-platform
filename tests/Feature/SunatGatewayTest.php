@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Modules\Invoices\SunatFault;
 use App\Modules\Invoices\SunatGateway;
 use App\Modules\Invoices\UblXmlBuilder;
 use Illuminate\Support\Facades\Http;
@@ -80,6 +81,25 @@ class SunatGatewayTest extends TestCase
 
             return true;
         });
+    }
+
+    public function test_soap_faults_keep_sunat_code_and_cdr_observations(): void
+    {
+        config(['commerce.sunat.ruc' => '20123456789', 'commerce.sunat.user' => 'USER', 'commerce.sunat.password' => 'x']);
+        Http::fake(['*' => Http::response('<soap-env:Envelope xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"><soap-env:Body><soap-env:Fault><faultcode>soap-env:Client.2335</faultcode><faultstring>El documento electr&#243;nico ingresado ha sido alterado</faultstring></soap-env:Fault></soap-env:Body></soap-env:Envelope>', 500)]);
+        try {
+            app(SunatGateway::class)->sendBill('20123456789-03-B001-1', '<Invoice/>');
+            $this->fail('Se esperaba un SOAP fault');
+        } catch (SunatFault $e) {
+            $this->assertSame('2335', $e->sunatCode);
+            $this->assertTrue($e->rejects());
+            $this->assertSame('SUNAT 2335: El documento electrónico ingresado ha sido alterado', $e->getMessage());
+        }
+        $this->assertFalse((new SunatFault('0111', 'No tiene el perfil'))->rejects());
+        $this->assertNull(SunatFault::fromSoap('<html>Bad gateway</html>'));
+
+        $cdr = $this->cdr('<ApplicationResponse xmlns:cbc="urn:test"><cbc:ResponseCode>0</cbc:ResponseCode><cbc:Description>Aceptada</cbc:Description><cbc:Note>4252 - El dato ingresado como atributo no corresponde</cbc:Note></ApplicationResponse>');
+        $this->assertSame(['0', 'Aceptada Observaciones: 4252 - El dato ingresado como atributo no corresponde'], app(SunatGateway::class)->parseCdr($cdr));
     }
 
     public function test_cdr_with_external_entities_is_rejected(): void

@@ -29,5 +29,14 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- Las pruebas nunca usan las credenciales SUNAT del .env local ni envían a SUNAT. -->
+        <env name="SUNAT_RUC" value="" force="true"/>
+        <env name="SUNAT_LEGAL_NAME" value="SYSCON" force="true"/>
+        <env name="SUNAT_SOL_USER" value="" force="true"/>
+        <env name="SUNAT_SOL_PASSWORD" value="" force="true"/>
+        <env name="SUNAT_CERTIFICATE_PATH" value="" force="true"/>
+        <env name="SUNAT_CERTIFICATE_PASSWORD" value="" force="true"/>
+        <env name="SUNAT_ADDRESS" value="" force="true"/>
+        <env name="SUNAT_ENDPOINT" value="https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService" force="true"/>
     </php>
 </phpunit>

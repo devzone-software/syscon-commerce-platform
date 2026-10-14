@@ -98,6 +98,12 @@ Se conservan borradores UBL 2.1, firma XMLDSig RSA-SHA256 con PKCS#12, envío SO
 
 Tipos: 01 factura, 03 boleta, 07 nota de crédito, 08 nota de débito. Las notas requieren un comprobante original ACCEPTED del mismo pedido. Estados: DRAFT, ACCEPTED, REJECTED, FAILED.
 
+### Entorno de prueba (SUNAT beta)
+
+El servicio beta (`SUNAT_ENDPOINT` por defecto) acepta el RUC público de prueba `20000000001`, el usuario SOL `MODDATOS` / `moddatos` y un certificado autofirmado. `php artisan sunat:test-certificate` genera el certificado en `certificates/` (fuera de git) e imprime las variables para el `.env`. El 14 de octubre de 2026 el beta aceptó una boleta, una factura, una nota de crédito por ítem y una nota de débito generadas por esta API. Lo aceptado en beta no tiene valor tributario: el PDF lo indica. PHP necesita un bundle de CA (`curl.cainfo` y `openssl.cafile` en php.ini) para verificar el HTTPS de SUNAT; no se desactiva la verificación.
+
+Respuestas: un CDR con código 0 deja el comprobante ACCEPTED (las observaciones se guardan en la descripción); un SOAP fault 2000–3999 lo deja REJECTED (el número queda usado; se corrige con otro comprobante o una nota); cualquier otro error lo deja FAILED y se puede reintentar con el mismo XML firmado. Hasta la primera firma el XML se regenera con el emisor configurado.
+
 Los precios incluyen IGV (`IGV_RATE`); cada comprobante guarda sus líneas con base e IGV, y el XML y el PDF salen de ellas. SUNAT_ADDRESS es el domicilio impreso en el PDF.
 
 Archivos: `GET /api/invoices/{id}/{pdf|xml|cdr}` para administración (el PDF de un borrador o rechazo lleva su advertencia) y `GET /api/orders/{id}/invoices` y `/api/orders/{id}/invoices/{invoiceId}/{pdf|xml|cdr}` para el cliente, solo con comprobantes ACCEPTED de sus pedidos. Si SUNAT_ENDPOINT es el servicio beta, el PDF se marca como documento de prueba sin valor tributario.

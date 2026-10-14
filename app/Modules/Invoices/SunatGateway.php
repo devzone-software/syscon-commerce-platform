@@ -67,7 +67,7 @@ class SunatGateway
         }
         $response = Http::connectTimeout(10)->timeout(30)->withOptions(['allow_redirects' => false])->withHeaders(['SOAPAction' => 'urn:sendBill'])->withBody($payload, 'text/xml; charset=utf-8')->post($endpoint);
         if ($response->status() !== 200) {
-            throw new \RuntimeException('SUNAT HTTP '.$response->status());
+            throw SunatFault::fromSoap($response->body()) ?? new \RuntimeException('SUNAT HTTP '.$response->status());
         }
         $doc = $this->parseXml($response->body());
         $cdr = $doc->getElementsByTagNameNS('*', 'applicationResponse')->item(0);
@@ -111,7 +111,14 @@ class SunatGateway
                 throw new \RuntimeException('CDR sin código');
             }
 
-            return [$code->textContent, $doc->getElementsByTagNameNS('*', 'Description')->item(0)?->textContent ?? ''];
+            $description = $doc->getElementsByTagNameNS('*', 'Description')->item(0)?->textContent ?? '';
+            // Aceptado con observaciones: SUNAT las lista como cbc:Note ("4xxx - texto").
+            $notes = array_map(fn ($n) => trim($n->textContent), iterator_to_array($doc->getElementsByTagNameNS('*', 'Note')));
+            if ($notes) {
+                $description .= ' Observaciones: '.implode('; ', $notes);
+            }
+
+            return [$code->textContent, $description];
         } finally {
             if ($zip->status === \ZipArchive::ER_OK) {
                 @$zip->close();
