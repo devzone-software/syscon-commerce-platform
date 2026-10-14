@@ -125,7 +125,8 @@ class InventoryConcurrencyTest extends TestCase
     private function pendingOrder(bool $expired = false): array
     {
         $product = $this->product(5);
-        $order = app(OrderService::class)->create($this->user('CUSTOMER'), [['productId' => $product, 'quantity' => 1]]);
+        $billing = ['type' => '03', 'documentType' => '1', 'documentNumber' => '12345678', 'name' => 'Ana Quispe'];
+        $order = app(OrderService::class)->create($this->user('CUSTOMER'), [['productId' => $product, 'quantity' => 1]], $billing);
         if ($expired) {
             DB::table('orders')->where('id', $order['id'])->update(['expires_at' => now()->subMinute()]);
         }

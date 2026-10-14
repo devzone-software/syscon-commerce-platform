@@ -28,6 +28,11 @@ return new class extends Migration
 
     public function down(): void
     {
+        // MySQL usa el índice único como índice de la clave foránea customer_id (descartó el suyo al
+        // crearlo): antes de quitarlo hay que darle a la clave foránea un índice propio.
+        Schema::table('orders', function (Blueprint $t) {
+            $t->index('customer_id');
+        });
         Schema::table('orders', function (Blueprint $t) {
             $t->dropUnique(['customer_id', 'idempotency_key']);
             $t->dropColumn(['delivery_method', 'delivery_cost', 'contact_name', 'contact_phone', 'delivery_address', 'delivery_district', 'delivery_reference', 'idempotency_key', 'request_hash']);

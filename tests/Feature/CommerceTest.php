@@ -1011,6 +1011,8 @@ class CommerceTest extends TestCase
 
         $closed = $this->postJson('/api/admin/cash/close', ['countedCash' => '174.00', 'notes' => 'Faltan 80 céntimos'], $admin)->assertOk()->json('data');
         $this->assertSame(['CLOSED', '174.80', '174.00', '-0.80'], [$closed['status'], $closed['expectedCash'], $closed['countedCash'], $closed['difference']]);
+        // En MySQL sin DEFAULT explícito la apertura se sobrescribía al cerrar (ON UPDATE CURRENT_TIMESTAMP).
+        $this->assertSame($current['openedAt'], $closed['openedAt']);
         $this->postJson('/api/admin/cash/close', ['countedCash' => '1'], $admin)->assertConflict();
         $this->postJson('/api/admin/sales', ['items' => [['productId' => $product['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'payment' => ['method' => 'CASH'], 'idempotencyKey' => (string) Str::uuid()], $admin)->assertConflict();
         $this->getJson('/api/admin/cash/sessions', $admin)->assertOk()->assertJsonPath('data.total', 1)->assertJsonPath('data.items.0.difference', '-0.80');
@@ -1104,7 +1106,10 @@ class CommerceTest extends TestCase
         $this->assertNull($order['billing']['verification']);
         config(['commerce.ruc_lookup.driver' => 'fake']);
         $order = $this->order($customer, $this->product(5, 'SKU-2'), 1, $factura);
-        $this->assertSame(['found' => true, 'name' => 'COMERCIAL ANDINA S.A.C.', 'status' => 'ACTIVO', 'condition' => 'HABIDO', 'source' => 'fake'], array_diff_key($order['billing']['verification'], ['checkedAt' => 1]));
+        // MySQL reordena las claves de una columna JSON: se compara sin importar el orden.
+        $verification = array_diff_key($order['billing']['verification'], ['checkedAt' => 1]);
+        ksort($verification);
+        $this->assertSame(['condition' => 'HABIDO', 'found' => true, 'name' => 'COMERCIAL ANDINA S.A.C.', 'source' => 'fake', 'status' => 'ACTIVO'], $verification);
         // El nombre que escribió el cliente se conserva; la verificación queda al lado para revisarla.
         $this->assertSame('Mi empresa', $order['billing']['name']);
         // Con el proveedor caído la compra sigue, sin verificación.

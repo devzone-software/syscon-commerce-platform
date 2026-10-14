@@ -136,6 +136,14 @@ vendor/bin/pint --test
 php artisan test
 ```
 
+Las pruebas de concurrencia (`InventoryConcurrencyTest`) necesitan MySQL/MariaDB y se omiten en SQLite. Con una base de pruebas dedicada (las pruebas borran y recrean sus tablas):
+
+```bash
+DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_DATABASE=commerce_test DB_USERNAME=commerce_test DB_PASSWORD=... php vendor/bin/phpunit
+```
+
+Correr la suite completa en MySQL detecta diferencias con SQLite, como el `ON UPDATE CURRENT_TIMESTAMP` implícito de MySQL 5.7 que corrige la migración `fix_mysql_timestamp_auto_update`.
+
 La suite cubre autenticación/rotación, autorización y propiedad, reservas/cancelaciones, pagos repetidos, rollback de importación CSV, borradores/envíos SUNAT y verificación criptográfica de firma. CI ejecuta las pruebas con SQLite y MariaDB; en MariaDB también verifica que dos procesos simultáneos no reserven la misma última unidad.
 
 Referencias: [Laravel 13](https://laravel.com/docs/13.x), [Swagger UI](https://github.com/swagger-api/swagger-ui), [guías oficiales SUNAT](https://cpe.sunat.gob.pe/guias-y-manuales).
