@@ -2,6 +2,7 @@
 
 namespace App\Modules\Orders;
 
+use App\Modules\Lookup\RucLookup;
 use App\Modules\Notifications\Notifier;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
@@ -76,6 +77,8 @@ class OrderService
                 'billing_type' => $billing['type'] ?? null, 'billing_document_type' => $billing['documentType'] ?? null,
                 'billing_document_number' => $billing['documentNumber'] ?? null, 'billing_name' => $billing['name'] ?? null,
                 'billing_address' => $billing['address'] ?? null, 'expires_at' => self::reservationDeadline(),
+                // Verificación del RUC al comprar; no bloquea la compra si la consulta no está disponible.
+                'billing_verification' => ($billing['documentType'] ?? null) === '6' && ($check = app(RucLookup::class)->verify($billing['documentNumber'])) ? json_encode($check) : null,
                 'created_at' => now(), 'updated_at' => now()]);
             DB::table('order_details')->insert($details);
             $this->record($id, $seller ?? $customer, $seller ? 'STORE_SALE' : 'CREATED', null, 'PAYMENT_PENDING');
@@ -149,7 +152,8 @@ class OrderService
         $o = DB::table('orders')->where('id', $id)->first();
         abort_unless($o, 404, 'Pedido no encontrado');
 
-        $billing = $o->billing_type === null ? null : ['type' => $o->billing_type, 'documentType' => $o->billing_document_type, 'documentNumber' => $o->billing_document_number, 'name' => $o->billing_name, 'address' => $o->billing_address];
+        $billing = $o->billing_type === null ? null : ['type' => $o->billing_type, 'documentType' => $o->billing_document_type, 'documentNumber' => $o->billing_document_number, 'name' => $o->billing_name, 'address' => $o->billing_address,
+            'verification' => $o->billing_verification ? json_decode($o->billing_verification, true) : null];
 
         $deliveryCost = bcadd((string) ($o->delivery_cost ?? '0'), '0', 2);
         $delivery = $o->delivery_method === null ? null : ['method' => $o->delivery_method, 'cost' => $deliveryCost, 'contactName' => $o->contact_name, 'contactPhone' => $o->contact_phone, 'address' => $o->delivery_address, 'district' => $o->delivery_district, 'reference' => $o->delivery_reference];

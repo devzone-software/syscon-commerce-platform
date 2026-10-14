@@ -18,6 +18,8 @@ return [
     'web_url' => env('WEB_URL', ''),
     'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', ''))],
     // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.
+    // Consulta de RUC: fake (datos de prueba) o none; el proveedor real se agrega como driver.
+    'ruc_lookup' => ['driver' => env('RUC_LOOKUP_DRIVER', 'none')],
     'tax' => ['igv_rate' => env('IGV_RATE', '0.18')],
     'sunat' => [
         'ruc' => env('SUNAT_RUC', ''), 'legal_name' => env('SUNAT_LEGAL_NAME', 'SYSCON'),

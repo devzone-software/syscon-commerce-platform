@@ -350,7 +350,7 @@ class CommerceTest extends TestCase
 
         $factura = ['type' => '01', 'documentType' => '6', 'documentNumber' => ' 2012 3456 786 ', 'name' => '  Comercial  Andina SAC ', 'address' => 'Av. Arequipa 123, Lima'];
         $o = $this->order($h, $p, 1, $factura);
-        $this->assertSame(['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Comercial Andina SAC', 'address' => 'Av. Arequipa 123, Lima'], $o['billing']);
+        $this->assertSame(['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Comercial Andina SAC', 'address' => 'Av. Arequipa 123, Lima', 'verification' => null], $o['billing']);
         $this->assertNotNull($o['createdAt']);
         $this->getJson('/api/orders/'.$o['id'], $h)->assertOk()->assertJsonPath('data.billing.name', 'Comercial Andina SAC');
         // Se guarda en el propio pedido (no se lee del perfil), así que cambios posteriores del perfil no la alteran.
@@ -1074,5 +1074,43 @@ class CommerceTest extends TestCase
         DB::table('invoices')->where('id', $note['id'])->update(['created_at' => now()->subDays(9)]);
         $this->postJson('/api/invoices/'.$note['id'].'/void', ['reason' => 'Error'], $admin)->assertUnprocessable()->assertJsonPath('message', 'Plazo de anulación vencido (7 días); emite una nota de crédito');
         $this->postJson('/api/invoices/'.$factura['id'].'/void/check', [], $admin)->assertConflict();
+    }
+
+    public function test_ruc_lookup_validates_format_before_querying_the_provider(): void
+    {
+        $customer = $this->token();
+        $this->getJson('/api/lookup/ruc/20000000001')->assertUnauthorized();
+        // Sin proveedor configurado se informa y el cliente escribe la razón social.
+        $this->getJson('/api/lookup/ruc/20000000001', $customer)->assertStatus(503);
+        config(['commerce.ruc_lookup.driver' => 'fake']);
+        $this->getJson('/api/lookup/ruc/20000000002', $customer)->assertUnprocessable();
+        $this->getJson('/api/lookup/ruc/123', $customer)->assertNotFound();
+        $this->getJson('/api/lookup/ruc/20000000001', $customer)->assertOk()
+            ->assertJsonPath('data.name', 'SYSCON PRUEBA S.A.C.')->assertJsonPath('data.active', true)->assertJsonPath('data.source', 'fake');
+        $this->getJson('/api/lookup/ruc/20100000009', $customer)->assertOk()->assertJsonPath('data.active', false)->assertJsonPath('data.condition', 'NO HABIDO');
+        $this->getJson('/api/lookup/ruc/20600000005', $customer)->assertNotFound()->assertJsonPath('message', 'SUNAT no registra ese RUC.');
+        // Un proveedor que falla responde 503 sin romper la compra.
+        config(['commerce.ruc_lookup.driver' => 'caido']);
+        $this->getJson('/api/lookup/ruc/20123456786', $customer)->assertStatus(503);
+    }
+
+    public function test_orders_keep_what_was_verified_about_the_ruc(): void
+    {
+        $customer = $this->token();
+        $factura = ['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Mi empresa'];
+        $order = $this->order($customer, $this->product(), 1, $factura);
+        $this->assertNull($order['billing']['verification']);
+        config(['commerce.ruc_lookup.driver' => 'fake']);
+        $order = $this->order($customer, $this->product(5, 'SKU-2'), 1, $factura);
+        $this->assertSame(['found' => true, 'name' => 'COMERCIAL ANDINA S.A.C.', 'status' => 'ACTIVO', 'condition' => 'HABIDO', 'source' => 'fake'], array_diff_key($order['billing']['verification'], ['checkedAt' => 1]));
+        // El nombre que escribió el cliente se conserva; la verificación queda al lado para revisarla.
+        $this->assertSame('Mi empresa', $order['billing']['name']);
+        // Con el proveedor caído la compra sigue, sin verificación.
+        config(['commerce.ruc_lookup.driver' => 'caido']);
+        $order = $this->order($customer, $this->product(5, 'SKU-3'), 1, ['documentNumber' => '20100000009'] + $factura);
+        $this->assertNull($order['billing']['verification']);
+        // Una boleta con DNI no consulta nada.
+        config(['commerce.ruc_lookup.driver' => 'fake']);
+        $this->assertNull($this->order($customer, $this->product(5, 'SKU-4'))['billing']['verification']);
     }
 }

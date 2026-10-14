@@ -3,6 +3,7 @@
 use App\Modules\Auth\AuthController;
 use App\Modules\Catalog\CatalogController;
 use App\Modules\Invoices\InvoiceController;
+use App\Modules\Lookup\LookupController;
 use App\Modules\Orders\AdminOrderController;
 use App\Modules\Orders\CashController;
 use App\Modules\Orders\OrderController;
@@ -33,6 +34,7 @@ Route::get('orders/delivery-options', [OrderController::class, 'deliveryOptions'
 Route::get('orders/internal/{id}', [OrderController::class, 'internalShow'])->middleware('internal')->whereUuid('id');
 Route::post('orders/internal/{id}/paid', [OrderController::class, 'paid'])->middleware('internal')->whereUuid('id');
 Route::middleware('jwt')->group(function () {
+    Route::get('lookup/ruc/{ruc}', [LookupController::class, 'ruc'])->middleware('throttle:30,1')->where('ruc', '[0-9]{11}');
     Route::get('orders', [OrderController::class, 'index']);
     Route::post('orders', [OrderController::class, 'store']);
     Route::get('orders/{id}', [OrderController::class, 'show'])->whereUuid('id');
