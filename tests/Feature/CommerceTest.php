@@ -6,12 +6,17 @@ use App\Models\User;
 use App\Modules\Catalog\CatalogService;
 use App\Modules\Invoices\InvoiceFiles;
 use App\Modules\Invoices\SunatGateway;
+use App\Modules\Notifications\Notifier;
+use App\Modules\Notifications\OrderMail;
 use App\Modules\Orders\OrderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Mail\MailManager;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Support\Testing\Fakes\MailFake;
 use Tests\TestCase;
 
 class CommerceTest extends TestCase
@@ -710,6 +715,77 @@ class CommerceTest extends TestCase
         $this->assertStringContainsString('Valor resumen: abc123=', $html);
         DB::table('invoices')->where('id', $invoice['id'])->update(['status' => 'REJECTED']);
         $this->assertStringContainsString('Rechazado por SUNAT', app(InvoiceFiles::class)->html($row()));
+    }
+
+    public function test_customer_emails_are_sent_once_after_each_commercial_step(): void
+    {
+        Mail::fake();
+        config(['commerce.web_url' => 'https://tienda.test', 'commerce.payments.manual_instructions' => 'Yape 999 888 777']);
+        $user = User::create(['email' => 'ana@example.com', 'password' => 'customer-password-123', 'role' => 'CUSTOMER']);
+        $customer = ['Authorization' => 'Bearer '.$this->postJson('/api/auth/login', ['email' => 'ana@example.com', 'password' => 'customer-password-123'])->json('data.accessToken')];
+        $admin = $this->token('ADMIN');
+        $body = ['items' => [['productId' => $this->product()['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP, 'idempotencyKey' => (string) Str::uuid()];
+        $order = $this->postJson('/api/orders', $body, $customer)->assertOk()->json('data');
+        // Un reintento de la misma compra no envía otro correo.
+        $this->postJson('/api/orders', $body, $customer)->assertOk();
+        Mail::assertSent(OrderMail::class, 1);
+        Mail::assertSent(OrderMail::class, fn ($m) => $m->kind === 'ORDER_CREATED' && $m->hasTo('ana@example.com'));
+        $html = (new OrderMail('ORDER_CREATED', app(OrderService::class)->get($order['id']), null, null))->render();
+        $this->assertStringContainsString('Yape 999 888 777', $html);
+        $this->assertStringContainsString('https://tienda.test/pedido/'.$order['id'], $html);
+
+        $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MANUAL'], $customer)->json('data');
+        $this->postJson('/api/payments/'.$payment['id'].'/confirm', ['reference' => 'OP-1'], $admin)->assertOk();
+        $this->postJson('/api/payments/'.$payment['id'].'/confirm', ['reference' => 'OP-1'], $admin)->assertOk();
+        Mail::assertSent(OrderMail::class, fn ($m) => $m->kind === 'PAYMENT_CONFIRMED');
+        Mail::assertSent(OrderMail::class, 2);
+
+        // El comprobante solo se avisa cuando SUNAT lo acepta, con el PDF adjunto.
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data');
+        Mail::assertSent(OrderMail::class, 2);
+        $this->acceptSubmissions();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk();
+        Mail::assertSent(OrderMail::class, 3);
+        Mail::assertSent(OrderMail::class, fn ($m) => $m->kind === 'INVOICE_AVAILABLE' && $m->invoice->serial_number === 'B001-1'
+            && count($m->attachments()) === 1 && str_ends_with($m->envelope()->subject, '· pedido '.strtoupper(substr($order['id'], 0, 8))));
+        $this->assertSame(3, DB::table('notifications')->where('order_id', $order['id'])->where('status', 'SENT')->count());
+        $this->getJson('/api/admin/orders/'.$order['id'], $admin)->assertOk()->assertJsonCount(3, 'data.notifications')
+            ->assertJsonPath('data.notifications.2.type', 'INVOICE_AVAILABLE')->assertJsonPath('data.notifications.2.reference', $boleta['id']);
+        $this->assertSame($user->id, $order['customerId']);
+    }
+
+    public function test_email_failures_do_not_undo_the_sale_and_are_retried(): void
+    {
+        Mail::shouldReceive('to')->andThrow(new \RuntimeException('SMTP no disponible'));
+        $customer = $this->token();
+        $order = $this->order($customer, $this->product());
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAYMENT_PENDING']);
+        $n = DB::table('notifications')->where('order_id', $order['id'])->first();
+        $this->assertSame(['FAILED', 1, 'SMTP no disponible'], [$n->status, (int) $n->attempts, $n->last_error]);
+        $notifier = app(Notifier::class);
+        // Antes del plazo de reintento no se vuelve a intentar.
+        $this->assertSame(0, $notifier->sendDue());
+        $this->assertSame(1, (int) DB::table('notifications')->where('id', $n->id)->value('attempts'));
+        foreach (range(2, Notifier::MAX_ATTEMPTS) as $attempt) {
+            $this->travel(2)->hours();
+            $notifier->sendDue();
+        }
+        $n = DB::table('notifications')->where('id', $n->id)->first();
+        $this->assertSame([Notifier::MAX_ATTEMPTS, null], [(int) $n->attempts, $n->next_attempt_at]);
+        $this->travel(1)->days();
+        $this->assertSame(0, $notifier->sendDue());
+
+        // El reenvío manual funciona cuando el correo vuelve y no toca el pedido.
+        Mail::swap(new MailFake(new MailManager(app())));
+        $admin = $this->token('ADMIN');
+        $this->postJson('/api/admin/notifications/'.$n->id.'/resend', [], $customer)->assertForbidden();
+        $this->postJson('/api/admin/notifications/'.$n->id.'/resend', [], $admin)->assertOk()->assertJsonPath('data.status', 'SENT');
+        Mail::assertSent(OrderMail::class, 1);
+        $this->postJson('/api/admin/notifications/'.Str::uuid().'/resend', [], $admin)->assertNotFound();
+        $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'NOTIFICATION_RESENT', 'reference' => 'ORDER_CREATED']);
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAYMENT_PENDING']);
+        $this->assertDatabaseCount('orders', 1);
     }
 
     public function test_customers_download_only_accepted_documents_of_their_orders(): void

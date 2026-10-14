@@ -1,5 +1,6 @@
 <?php
 
+use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
 use App\Modules\Suppliers\SupplierService;
 use Illuminate\Support\Facades\Artisan;
@@ -22,6 +23,13 @@ Artisan::command('suppliers:sync', function (SupplierService $service) {
 Artisan::command('orders:expire', function (OrderService $orders) {
     $this->info('Pedidos vencidos: '.$orders->expireDue());
 })->purpose('Vence los pedidos impagos cuya reserva terminó y libera su stock');
+Artisan::command('notifications:send', function (Notifier $notifier) {
+    $this->info('Avisos enviados: '.$notifier->sendDue());
+})->purpose('Envía los correos pendientes y reintenta los fallidos cuyo plazo venció');
+Schedule::call(fn () => Artisan::call('notifications:send'))
+    ->name('notifications-send')
+    ->everyMinute()
+    ->withoutOverlapping();
 Schedule::call(fn () => Artisan::call('orders:expire'))
     ->name('orders-expire')
     ->everyFiveMinutes()

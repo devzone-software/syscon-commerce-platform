@@ -2,6 +2,7 @@
 
 namespace App\Modules\Orders;
 
+use App\Modules\Notifications\Notifier;
 use App\Modules\Payments\PaymentController;
 use App\Support\Api;
 use Illuminate\Database\Query\Builder;
@@ -63,9 +64,18 @@ class AdminOrderController
                 ->map(fn ($p) => PaymentController::view($p) + ['confirmedBy' => $p->confirmed_by ? ($emails[$p->confirmed_by] ?? null) : null])->all(),
             'invoices' => DB::table('invoices')->where('order_id', $id)->orderBy('created_at')->get()
                 ->map(fn ($i) => ['id' => $i->id, 'type' => $i->type, 'serialNumber' => $i->serial_number, 'status' => $i->status, 'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at)])->all(),
+            'notifications' => DB::table('notifications')->where('order_id', $id)->get()
+                ->sortBy([['created_at', 'asc'], fn ($a, $b) => array_search($a->type, Notifier::TYPES) <=> array_search($b->type, Notifier::TYPES)])
+                ->map(fn ($n) => Notifier::view($n))->values()->all(),
             'events' => DB::table('order_events')->where('order_id', $id)->orderBy('id')->get()
                 ->map(fn ($e) => ['type' => $e->type, 'from' => $e->from_status, 'to' => $e->to_status, 'reference' => $e->reference, 'actor' => $e->actor_id ? ($emails[$e->actor_id] ?? null) : null, 'system' => $e->actor_id === null, 'at' => OrderService::iso($e->created_at)])->all(),
         ]);
+    }
+
+    /** Reenvía un correo al cliente; no repite ninguna operación del pedido. */
+    public function resendNotification(Request $r, string $id, Notifier $notifier)
+    {
+        return Api::ok('Aviso reenviado', $notifier->resend($id, $r->user()->id));
     }
 
     /** Bandeja de pagos: por defecto los pendientes de verificar, los más antiguos primero. */

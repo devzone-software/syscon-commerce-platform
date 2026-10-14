@@ -2,6 +2,7 @@
 
 namespace App\Modules\Invoices;
 
+use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\BillingData;
 use App\Modules\Orders\OrderService;
 use App\Support\Api;
@@ -15,7 +16,7 @@ class InvoiceController
 
     private const SERIAL = 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/';
 
-    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files) {}
+    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files, private Notifier $notifier) {}
 
     /**
      * Crea el borrador con la serie y el correlativo que asigna el backend. Si el pedido ya tiene
@@ -216,6 +217,7 @@ class InvoiceController
                     // inventario. Quedan en el historial para conciliar lo cobrado con lo facturado.
                     $event = ['01' => 'INVOICE_ACCEPTED', '03' => 'INVOICE_ACCEPTED', '07' => 'CREDIT_NOTE_ACCEPTED', '08' => 'DEBIT_NOTE_ACCEPTED'][$invoice->type];
                     $this->orders->record($invoice->order_id, $r->user()?->id, $event, null, null, $invoice->serial_number);
+                    $this->notifier->queue($invoice->order_id, 'INVOICE_AVAILABLE', $invoice->id);
                 }
             } catch (\Throwable $e) {
                 DB::table('invoices')->where('id', $id)->update(['status' => 'FAILED', 'error' => mb_substr($e->getMessage(), 0, 1000), 'updated_at' => now()]);

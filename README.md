@@ -88,6 +88,10 @@ Admite campos CSV entrecomillados. El feed completo se valida y aplica transacci
 
 La evaluación de [SEGO](docs/suppliers/SEGO.md) se conserva. No se configura scraping de su web pública.
 
+## Correos al cliente
+
+Se avisa al cliente cuando se crea su pedido, cuando se confirma el pago y cuando SUNAT acepta su comprobante (con el PDF adjunto). Cada aviso se registra en `notifications` dentro de la transacción de la operación, una sola vez por pedido, tipo y comprobante, y se envía tras el commit. Un fallo de correo no revierte nada: `notifications:send` (cada minuto) reintenta con espera creciente hasta 5 intentos, y `POST /api/admin/notifications/{id}/resend` (orders:manage) reenvía sin repetir la operación. Configura MAIL_* y WEB_URL.
+
 ## SUNAT
 
 Se conservan borradores UBL 2.1, firma XMLDSig RSA-SHA256 con PKCS#12, envío SOAP sendBill y lectura/persistencia de ZIP CDR. Configura SUNAT_RUC, SUNAT_LEGAL_NAME, SUNAT_SOL_USER, SUNAT_SOL_PASSWORD, SUNAT_CERTIFICATE_PATH y SUNAT_CERTIFICATE_PASSWORD. En Hostinger, guarda el certificado en `syscon/certificates/`, fuera de `public_html`, y configura SUNAT_CERTIFICATE_PATH con su ruta absoluta.

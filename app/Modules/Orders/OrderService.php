@@ -2,6 +2,7 @@
 
 namespace App\Modules\Orders;
 
+use App\Modules\Notifications\Notifier;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -76,6 +77,8 @@ class OrderService
                 'created_at' => now(), 'updated_at' => now()]);
             DB::table('order_details')->insert($details);
             $this->record($id, $customer, 'CREATED', null, 'PAYMENT_PENDING');
+            // Se resuelve aquí: Notifier también depende de este servicio.
+            app(Notifier::class)->queue($id, 'ORDER_CREATED');
 
             return $this->get($id);
         }, 3);
@@ -183,6 +186,9 @@ class OrderService
                 DB::table('payments')->where('order_id', $id)->where('status', 'PENDING')->update(['status' => 'CANCELLED', 'updated_at' => now()]);
             }
             $this->record($id, $actor, $target === 'EXPIRED' ? 'EXPIRED' : ($target === 'PAID' ? 'PAYMENT_CONFIRMED' : 'STATUS_CHANGED'), $o->status, $target, $reference);
+            if ($target === 'PAID') {
+                app(Notifier::class)->queue($id, 'PAYMENT_CONFIRMED');
+            }
 
             return $this->get($id);
         }, 3);

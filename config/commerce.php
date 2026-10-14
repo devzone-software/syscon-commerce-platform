@@ -12,6 +12,8 @@ return [
     // Reserva de stock de un pedido impago: al vencer se libera (0 desactiva el vencimiento).
     'orders' => ['reservation_hours' => (int) env('ORDER_RESERVATION_HOURS', 48)],
     // Texto que ve el cliente en su solicitud de pago manual (cuentas, CCI, a quién avisar).
+    // Web de la tienda: los correos enlazan al detalle del pedido ({web_url}/pedido/{id}).
+    'web_url' => env('WEB_URL', ''),
     'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', ''))],
     // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.
     'tax' => ['igv_rate' => env('IGV_RATE', '0.18')],

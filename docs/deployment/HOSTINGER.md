@@ -100,7 +100,9 @@ En **Cron Jobs**, elige Custom y programa cada minuto:
 
 Sustituye la ruta de PHP y la del proyecto por las reales. Si tu plan solo permite intervalos mayores, usa un intervalo que incluya los minutos 0, 15, 30 y 45, por ejemplo cada cinco minutos.
 
-El scheduler ejecuta suppliers:sync cada quince minutos, con exclusión de solapamiento mediante la caché de base de datos. El callback se ejecuta en el mismo proceso PHP, sin lanzar subprocessos. No hay worker de cola: QUEUE_CONNECTION=sync.
+El scheduler envía los correos pendientes (notifications:send) cada minuto, vence pedidos impagos cada cinco y ejecuta suppliers:sync cada quince minutos, con exclusión de solapamiento mediante la caché de base de datos. El callback se ejecuta en el mismo proceso PHP, sin lanzar subprocessos. No hay worker de cola: QUEUE_CONNECTION=sync.
+
+Los correos al cliente usan el SMTP de Hostinger: configura MAIL_MAILER=smtp, MAIL_HOST (smtp.hostinger.com), MAIL_PORT=465, MAIL_SCHEME=smtps, MAIL_USERNAME, MAIL_PASSWORD y MAIL_FROM_ADDRESS con un buzón del dominio, y WEB_URL con la dirección de la tienda. Si el envío falla, el pedido no se altera: el aviso queda registrado y el cron lo reintenta hasta cinco veces; después el administrador puede reenviarlo desde el detalle del pedido.
 
 Las frecuencias dependen de las restricciones y recursos de tu cuenta. Revisa la salida del cron desde hPanel; las instrucciones oficiales están en [Cron Jobs](https://www.hostinger.com/support/1583465-how-to-set-up-a-cron-job-at-hostinger/).
 

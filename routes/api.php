@@ -41,6 +41,7 @@ Route::middleware('jwt')->group(function () {
         Route::get('orders', [AdminOrderController::class, 'index'])->middleware('permission:orders:manage');
         Route::get('orders/{id}', [AdminOrderController::class, 'show'])->middleware('permission:orders:manage')->whereUuid('id');
         Route::get('payments', [AdminOrderController::class, 'payments'])->middleware('permission:payments:confirm');
+        Route::post('notifications/{id}/resend', [AdminOrderController::class, 'resendNotification'])->middleware('permission:orders:manage')->whereUuid('id');
     });
     Route::post('payments', [PaymentController::class, 'store']);
     Route::get('payments/{id}', [PaymentController::class, 'show'])->whereUuid('id');
