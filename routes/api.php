@@ -6,6 +6,7 @@ use App\Modules\Invoices\InvoiceController;
 use App\Modules\Orders\AdminOrderController;
 use App\Modules\Orders\OrderController;
 use App\Modules\Payments\PaymentController;
+use App\Modules\Reports\ReportController;
 use App\Modules\Suppliers\SupplierController;
 use Illuminate\Support\Facades\Route;
 
@@ -41,6 +42,8 @@ Route::middleware('jwt')->group(function () {
         Route::get('orders', [AdminOrderController::class, 'index'])->middleware('permission:orders:manage');
         Route::get('orders/{id}', [AdminOrderController::class, 'show'])->middleware('permission:orders:manage')->whereUuid('id');
         Route::get('payments', [AdminOrderController::class, 'payments'])->middleware('permission:payments:confirm');
+        Route::get('reports/summary', [ReportController::class, 'summary'])->middleware('permission:reports:view');
+        Route::get('reports/sales', [ReportController::class, 'sales'])->middleware('permission:reports:view');
         Route::post('notifications/{id}/resend', [AdminOrderController::class, 'resendNotification'])->middleware('permission:orders:manage')->whereUuid('id');
     });
     Route::post('payments', [PaymentController::class, 'store']);

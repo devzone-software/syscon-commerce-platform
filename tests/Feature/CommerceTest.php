@@ -12,6 +12,7 @@ use App\Modules\Orders\OrderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Mail\MailManager;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -815,5 +816,62 @@ class CommerceTest extends TestCase
         $other = $this->order($customer, $this->product(5, 'SKU-2'));
         $this->get('/api/orders/'.$other['id'].'/invoices/'.$boleta['id'].'/pdf', $customer)->assertNotFound();
         $this->getJson('/api/orders/'.Str::uuid().'/invoices', $customer)->assertNotFound();
+    }
+
+    public function test_sales_report_reconciles_orders_payments_and_invoices(): void
+    {
+        Mail::fake();
+        // 22:30 en Lima del 13 de octubre: la venta cuenta ese día, no el 14 (UTC).
+        $this->travelTo(Carbon::parse('2026-10-14 03:30:00', 'UTC'));
+        $this->acceptSubmissions();
+        [$ok, $admin] = $this->paidOrder();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $ok['id'], 'type' => '03'], $admin)->json('data');
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk();
+        [$withoutInvoice] = $this->paidOrder();
+        // Pagado por el canal interno: no hay pago aprobado registrado.
+        $customer = $this->token();
+        $internal = $this->order($customer, $this->product(5, 'SKU-2'));
+        app(OrderService::class)->transition($internal['id'], 'PAID');
+        [$returned] = $this->paidOrder();
+        $doc = $this->postJson('/api/invoices', ['orderId' => $returned['id'], 'type' => '03'], $admin)->json('data');
+        $this->postJson('/api/invoices/'.$doc['id'].'/submit', [], $admin)->assertOk();
+        $note = $this->postJson('/api/invoices', ['orderId' => $returned['id'], 'type' => '07', 'referencedSerialNumber' => $doc['serialNumber'], 'noteCode' => '07', 'noteReason' => 'Devolución', 'items' => [['productId' => $returned['details'][0]['productId'], 'quantity' => 1]]], $admin)->json('data');
+        $this->postJson('/api/invoices/'.$note['id'].'/submit', [], $admin)->assertOk();
+        // Un pedido pendiente y uno cancelado no son ventas.
+        $this->order($customer, $this->product(5, 'SKU-3'));
+        $cancelled = $this->order($customer, $this->product(5, 'SKU-4'));
+        app(OrderService::class)->transition($cancelled['id'], 'CANCELLED');
+        $this->travelBack();
+
+        $period = '?from=2026-10-13&to=2026-10-13';
+        $this->getJson('/api/admin/reports/summary'.$period, $customer)->assertForbidden();
+        $summary = $this->getJson('/api/admin/reports/summary'.$period, $admin)->assertOk()->json('data');
+        $this->assertSame(['orders' => 4, 'total' => '81.20', 'taxableAmount' => '68.80', 'taxAmount' => '12.40', 'deliveryTotal' => '0.00', 'averageTicket' => '20.30'], array_diff_key($summary['sales'], ['byDay' => 1]));
+        $this->assertSame([['date' => '2026-10-13', 'orders' => 4, 'total' => '81.20']], $summary['sales']['byDay']);
+        $this->assertSame(['orders' => 1, 'total' => '20.30'], $summary['releasedOrders']['CANCELLED']);
+        $this->assertSame([1, '20.30'], [$summary['pendingPayments']['orders'], $summary['pendingPayments']['total']]);
+        $this->assertSame(2, $summary['reservations']['units']);
+        $this->assertSame(['paidOrdersTotal' => '81.20', 'approvedPaymentsTotal' => '60.90', 'netInvoicedTotal' => '30.45', 'ordersWithoutInvoice' => 2, 'mismatchedOrders' => 3], $summary['reconciliation']);
+        $boletas = collect($summary['invoices'])->firstWhere('type', '03');
+        $this->assertSame([2, '40.60'], [$boletas['byStatus']['ACCEPTED'], $boletas['acceptedTotal']]);
+        $this->assertSame(0, $this->getJson('/api/admin/reports/summary?from=2026-10-14&to=2026-10-14', $admin)->json('data.sales.orders'));
+
+        $rows = collect($this->getJson('/api/admin/reports/sales'.$period, $admin)->assertOk()->assertJsonPath('data.total', 4)->json('data.items'))->keyBy('orderId');
+        $this->assertSame([], $rows[$ok['id']]['issues']);
+        $this->assertSame(['NOT_INVOICED'], $rows[$withoutInvoice['id']]['issues']);
+        $this->assertSame(['PAYMENT_MISMATCH', 'NOT_INVOICED'], $rows[$internal['id']]['issues']);
+        $this->assertSame(['INVOICED_MISMATCH'], $rows[$returned['id']]['issues']);
+        $this->assertSame('10.15', $rows[$returned['id']]['netInvoiced']);
+        $this->assertStringStartsWith('2026-10-13T22:30', $rows[$ok['id']]['paidAt']);
+        $this->getJson('/api/admin/reports/sales'.$period.'&mismatched=1&perPage=2', $admin)->assertOk()->assertJsonPath('data.total', 3)->assertJsonCount(2, 'data.items');
+
+        $csv = $this->get('/api/admin/reports/sales'.$period.'&format=csv', $admin)->assertOk()->assertHeader('Content-Type', 'text/csv; charset=UTF-8');
+        $lines = explode("\n", trim($csv->getContent()));
+        $this->assertCount(5, $lines);
+        $this->assertStringStartsWith("\u{FEFF}\"Fecha de pago\";Pedido;Estado;", $lines[0]);
+        $this->assertStringContainsString('B001-1 (ACCEPTED)', $csv->getContent());
+        $this->getJson('/api/admin/reports/summary?from=2025-01-01&to=2026-10-13', $admin)->assertUnprocessable();
+        $this->getJson('/api/admin/reports/summary?from=2026-10-13&to=2026-10-01', $admin)->assertUnprocessable();
+        $this->getJson('/api/admin/reports/summary', $admin)->assertOk()->assertJsonPath('data.period.timezone', 'America/Lima');
     }
 }
