@@ -16,7 +16,7 @@ class InvoiceController
 
     private const SERIAL = 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/';
 
-    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files, private Notifier $notifier, private InvoiceSubmission $submission) {}
+    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files, private Notifier $notifier, private InvoiceSubmission $submission, private InvoiceVoiding $voiding) {}
 
     /**
      * Crea el borrador con la serie y el correlativo que asigna el backend. Si el pedido ya tiene
@@ -76,10 +76,10 @@ class InvoiceController
         }, 3);
     }
 
-    /** Un comprobante anulado por una nota de crédito aceptada ya no cuenta como el del pedido. */
+    /** Un comprobante anulado (baja aceptada o nota de crédito 01/02 aceptada) ya no cuenta como el del pedido. */
     private function annulled(object $invoice): bool
     {
-        return DB::table('invoices')->where('referenced_serial_number', $invoice->serial_number)->where('type', '07')
+        return $invoice->status === 'VOIDED' || DB::table('invoices')->where('referenced_serial_number', $invoice->serial_number)->where('type', '07')
             ->whereIn('note_code', InvoiceLines::ANNULMENTS)->where('status', 'ACCEPTED')->exists();
     }
 
@@ -200,6 +200,25 @@ class InvoiceController
         return Api::ok('Envío procesado', $this->view($id));
     }
 
+    /** Anula un comprobante aceptado con comunicación de baja (serie F) o resumen diario (serie B). */
+    public function void(Request $r, string $id)
+    {
+        $data = $r->validate(['reason' => 'required|string|min:3|max:100']);
+        $this->voiding->void($id, $r->user()?->id, $data['reason']);
+
+        return Api::ok('Anulación procesada', $this->view($id));
+    }
+
+    /** Vuelve a consultar el ticket de una anulación que SUNAT aún procesaba. */
+    public function checkVoid(Request $r, string $id)
+    {
+        $void = DB::table('voided_documents')->where('invoice_id', $id)->where('status', 'SENT')->orderByDesc('created_at')->first();
+        abort_unless($void, 409, 'No hay una anulación en proceso');
+        $this->voiding->check($void->id, $r->user()?->id);
+
+        return Api::ok('Anulación consultada', $this->view($id));
+    }
+
     /** Pendiente de conciliación: consulta el CDR o reenvía el mismo XML firmado (SUNAT responde 1033 si ya lo tenía). */
     public function reconcile(Request $r, string $id)
     {
@@ -222,6 +241,7 @@ class InvoiceController
             'referencedSerialNumber' => $i->referenced_serial_number, 'noteCode' => $i->note_code, 'noteReason' => $i->note_reason,
             'taxRate' => bcadd((string) $i->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $i->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $i->tax_amount, '0', 2),
             'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => ($c?->zip_base64 ?? '') !== '',
+            'voids' => DB::table('voided_documents')->where('invoice_id', $id)->orderBy('created_at')->get()->map(fn ($v) => InvoiceVoiding::view($v))->all(),
             'attempts' => DB::table('invoice_attempts')->leftJoin('users', 'users.id', '=', 'invoice_attempts.actor_id')->where('invoice_id', $id)->orderBy('invoice_attempts.id')
                 ->get(['invoice_attempts.*', 'users.email'])->map(fn ($a) => ['action' => $a->action, 'result' => $a->result, 'sunatCode' => $a->sunat_code, 'message' => $a->message, 'actor' => $a->email, 'at' => OrderService::iso($a->created_at)])->all(),
             'lines' => array_map(fn ($l) => ['lineNumber' => (int) $l['line_number'], 'productId' => $l['product_id'], 'sku' => $l['sku'], 'description' => $l['description'], 'unitCode' => $l['unit_code'], 'quantity' => (int) $l['quantity'],

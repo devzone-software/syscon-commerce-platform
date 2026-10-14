@@ -1,6 +1,7 @@
 <?php
 
 use App\Modules\Invoices\InvoiceSubmission;
+use App\Modules\Invoices\InvoiceVoiding;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
 use App\Modules\Suppliers\SupplierService;
@@ -43,6 +44,7 @@ Artisan::command('sunat:test-certificate {path=certificates/sunat-prueba.p12}', 
 })->purpose('Genera un certificado autofirmado para enviar comprobantes al servicio beta de SUNAT');
 Artisan::command('invoices:reconcile', function (InvoiceSubmission $submission) {
     $this->info('Comprobantes conciliados: '.$submission->reconcilePending());
+    $this->info('Anulaciones consultadas: '.app(InvoiceVoiding::class)->checkPending());
 })->purpose('Concilia con SUNAT los comprobantes que quedaron sin respuesta');
 Schedule::call(fn () => Artisan::call('invoices:reconcile'))
     ->name('invoices-reconcile')

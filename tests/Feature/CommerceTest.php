@@ -471,9 +471,9 @@ class CommerceTest extends TestCase
     {
         $gateway = $this->mock(SunatGateway::class);
         $gateway->shouldReceive('configured')->andReturn(true);
-        $gateway->shouldReceive('sign')->andReturnUsing(fn ($xml) => $xml);
+        $gateway->shouldReceive('sign')->andReturnUsing(fn ($xml) => $xml)->byDefault();
         $gateway->shouldReceive('sendBill')->andReturn('CDR');
-        $gateway->shouldReceive('parseCdr')->andReturn(['0', 'Aceptado']);
+        $gateway->shouldReceive('parseCdr')->andReturn(['0', 'Aceptado'])->byDefault();
     }
 
     public function test_credit_note_annulment_allows_reissuing_the_receipt(): void
@@ -1014,5 +1014,65 @@ class CommerceTest extends TestCase
         $this->getJson('/api/admin/cash/sessions', $admin)->assertOk()->assertJsonPath('data.total', 1)->assertJsonPath('data.items.0.difference', '-0.80');
         // Una caja nueva empieza de cero.
         $this->postJson('/api/admin/cash/open', ['openingAmount' => '50'], $admin)->assertOk()->assertJsonPath('data.expectedCash', '50.00');
+    }
+
+    public function test_accepted_documents_are_voided_with_daily_summary_or_voided_notice(): void
+    {
+        config(['commerce.sunat.ruc' => '20000000001']);
+        [$order, $admin] = $this->paidOrder();
+        $this->acceptSubmissions();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->json('data');
+        $void = fn (string $id) => $this->postJson('/api/invoices/'.$id.'/void', ['reason' => 'Error en la emisión'], $admin);
+        $void($boleta['id'])->assertConflict();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/void', ['reason' => 'x'], $admin)->assertUnprocessable();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/void', ['reason' => 'Error en la emisión'], $this->token())->assertForbidden();
+
+        $gateway = app(SunatGateway::class);
+        $gateway->shouldReceive('sendSummary')->once()->withArgs(function ($name, $xml) {
+            $doc = new \DOMDocument;
+            $doc->loadXML($xml);
+
+            return str_starts_with($name, '20000000001-RC-') && $doc->documentElement->localName === 'SummaryDocuments'
+                && $doc->getElementsByTagName('ConditionCode')->item(0)->textContent === '3'
+                && $doc->getElementsByTagName('SummaryDocumentsLine')->item(0)->getElementsByTagName('ID')->item(0)->textContent === 'B001-1'
+                && $doc->getElementsByTagName('TotalAmount')->item(0)->textContent === '20.30';
+        })->andReturn('TICKET-1');
+        // Primero SUNAT aún procesa; la segunda consulta trae el CDR.
+        $gateway->shouldReceive('ticketStatus')->with('TICKET-1')->twice()->andReturn(['code' => '98', 'cdr' => null], ['code' => '0', 'cdr' => 'CDR-RC']);
+        $gateway->shouldReceive('parseCdr')->with('CDR-RC')->andReturn(['0', 'El Resumen diario ha sido aceptado']);
+        $data = $void($boleta['id'])->assertOk()->assertJsonPath('data.status', 'VOIDING')->assertJsonPath('data.voids.0.status', 'SENT')->json('data');
+        $this->assertMatchesRegularExpression('/^RC-\d{8}-1$/', $data['voids'][0]['identifier']);
+        // Mientras se anula no se puede emitir otro comprobante ni anular otra vez.
+        $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertConflict();
+        $void($boleta['id'])->assertConflict();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/void/check', [], $admin)->assertOk()->assertJsonPath('data.status', 'VOIDED')->assertJsonPath('data.voids.0.status', 'ACCEPTED');
+        $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'INVOICE_VOIDED']);
+        // Anulada, el pedido se vuelve a facturar (aquí con factura y RUC).
+        $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->assertJsonPath('data.serialNumber', 'F001-1');
+        $this->getJson('/api/orders/'.$order['id'].'/invoices', $admin)->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_voiding_rules_for_notes_deadline_and_rejection(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $this->acceptSubmissions();
+        $factura = $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->json('data');
+        $this->postJson('/api/invoices/'.$factura['id'].'/submit', [], $admin)->assertOk();
+        $note = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '08', 'referencedSerialNumber' => 'F001-1', 'noteCode' => '01', 'noteReason' => 'Intereses', 'amount' => '5.90'], $admin)->json('data');
+        // Con una nota vigente, la factura no se anula; la nota sí (comunicación de baja RA).
+        $this->postJson('/api/invoices/'.$factura['id'].'/void', ['reason' => 'Error'], $admin)->assertConflict();
+        $this->postJson('/api/invoices/'.$note['id'].'/submit', [], $admin)->assertOk();
+        $gateway = app(SunatGateway::class);
+        $gateway->shouldReceive('sendSummary')->once()->withArgs(fn ($name, $xml) => str_contains($name, '-RA-') && str_contains($xml, 'VoidedDocuments') && str_contains($xml, '<sac:DocumentSerialID>FD01</sac:DocumentSerialID>'))->andReturn('T-2');
+        $gateway->shouldReceive('ticketStatus')->once()->andReturn(['code' => '99', 'cdr' => 'CDR-99']);
+        $gateway->shouldReceive('parseCdr')->with('CDR-99')->andReturn(['2324', 'El comprobante no puede ser dado de baja']);
+        // SUNAT la rechaza: la nota sigue aceptada y el motivo queda registrado.
+        $this->postJson('/api/invoices/'.$note['id'].'/void', ['reason' => 'Error en importe'], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED')
+            ->assertJsonPath('data.voids.0.status', 'REJECTED')->assertJsonPath('data.voids.0.responseCode', '2324');
+        // Fuera de plazo se exige nota de crédito.
+        DB::table('invoices')->where('id', $note['id'])->update(['created_at' => now()->subDays(9)]);
+        $this->postJson('/api/invoices/'.$note['id'].'/void', ['reason' => 'Error'], $admin)->assertUnprocessable()->assertJsonPath('message', 'Plazo de anulación vencido (7 días); emite una nota de crédito');
+        $this->postJson('/api/invoices/'.$factura['id'].'/void/check', [], $admin)->assertConflict();
     }
 }

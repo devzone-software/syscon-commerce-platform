@@ -76,6 +76,8 @@ Route::middleware('jwt')->group(function () {
         Route::patch('{id}', 'update')->whereUuid('id');
         Route::post('{id}/submit', 'submit')->whereUuid('id');
         Route::post('{id}/reconcile', 'reconcile')->whereUuid('id');
+        Route::post('{id}/void', 'void')->whereUuid('id');
+        Route::post('{id}/void/check', 'checkVoid')->whereUuid('id');
         Route::get('{id}/{format}', 'file')->whereUuid('id')->whereIn('format', ['pdf', 'xml', 'cdr']);
     });
 });

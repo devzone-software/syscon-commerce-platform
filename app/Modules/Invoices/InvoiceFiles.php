@@ -22,6 +22,9 @@ class InvoiceFiles
     {
         return match (true) {
             $invoice->status === 'REJECTED' => 'Rechazado por SUNAT — sin valor tributario',
+            $invoice->status === 'VOIDED' => 'Anulado ante SUNAT — sin valor tributario',
+            $invoice->status === 'VOIDING' => 'En anulación ante SUNAT',
+            $invoice->status === 'PENDING_CHECK' => 'Pendiente de confirmación de SUNAT',
             $invoice->status !== 'ACCEPTED' => 'Borrador — no enviado a SUNAT, sin valor tributario',
             self::testing() => 'Documento de prueba — sin valor tributario',
             default => null,

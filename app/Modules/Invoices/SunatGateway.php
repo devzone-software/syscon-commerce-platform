@@ -83,18 +83,7 @@ class SunatGateway
 
     public function sendBill(string $filename, string $xml): string
     {
-        $temp = tempnam(sys_get_temp_dir(), 'sunat-');
-        try {
-            $zip = new \ZipArchive;
-            if ($zip->open($temp, \ZipArchive::OVERWRITE) !== true) {
-                throw new \RuntimeException('No se pudo crear ZIP');
-            }
-            $zip->addFromString($filename.'.xml', $xml);
-            $zip->close();
-            $content = base64_encode(file_get_contents($temp));
-        } finally {
-            unlink($temp);
-        }
+        $content = $this->zip($filename, $xml);
         $name = htmlspecialchars($filename.'.zip', ENT_XML1 | ENT_QUOTES, 'UTF-8');
         $doc = $this->call((string) config('commerce.sunat.endpoint'), 'urn:sendBill', '<ser:sendBill><fileName>'.$name.'</fileName><contentFile>'.$content.'</contentFile></ser:sendBill>');
         $cdr = $doc->getElementsByTagNameNS('*', 'applicationResponse')->item(0);
@@ -103,6 +92,50 @@ class SunatGateway
         }
 
         return trim($cdr->textContent);
+    }
+
+    /** Envía un resumen o comunicación de baja; SUNAT responde con un ticket para consultar después. */
+    public function sendSummary(string $filename, string $xml): string
+    {
+        $name = htmlspecialchars($filename.'.zip', ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $doc = $this->call((string) config('commerce.sunat.endpoint'), 'urn:sendSummary', '<ser:sendSummary><fileName>'.$name.'</fileName><contentFile>'.$this->zip($filename, $xml).'</contentFile></ser:sendSummary>');
+        $ticket = trim($doc->getElementsByTagNameNS('*', 'ticket')->item(0)?->textContent ?? '');
+        if ($ticket === '') {
+            throw new \RuntimeException('Respuesta SUNAT sin ticket');
+        }
+
+        return $ticket;
+    }
+
+    /**
+     * Estado de un ticket: 0 procesado (con CDR), 98 en proceso, 99 procesado con errores (con CDR).
+     *
+     * @return array{code: string, cdr: ?string}
+     */
+    public function ticketStatus(string $ticket): array
+    {
+        $doc = $this->call((string) config('commerce.sunat.endpoint'), 'urn:getStatus', '<ser:getStatus><ticket>'.htmlspecialchars($ticket, ENT_XML1 | ENT_QUOTES, 'UTF-8').'</ticket></ser:getStatus>');
+        $content = trim($doc->getElementsByTagNameNS('*', 'content')->item(0)?->textContent ?? '');
+
+        return ['code' => trim($doc->getElementsByTagNameNS('*', 'statusCode')->item(0)?->textContent ?? ''), 'cdr' => $content !== '' ? $content : null];
+    }
+
+    /** ZIP en base64 con el XML, como lo exige SUNAT. */
+    private function zip(string $filename, string $xml): string
+    {
+        $temp = tempnam(sys_get_temp_dir(), 'sunat-');
+        try {
+            $zip = new \ZipArchive;
+            if ($zip->open($temp, \ZipArchive::OVERWRITE) !== true) {
+                throw new \RuntimeException('No se pudo crear ZIP');
+            }
+            $zip->addFromString($filename.'.xml', $xml);
+            $zip->close();
+
+            return base64_encode(file_get_contents($temp));
+        } finally {
+            unlink($temp);
+        }
     }
 
     public function parseCdr(string $base64): array
