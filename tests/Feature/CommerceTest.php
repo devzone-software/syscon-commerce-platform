@@ -1187,4 +1187,26 @@ class CommerceTest extends TestCase
         $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'PAYMENT_REFUND_REQUIRED']);
         $this->getJson('/api/admin/payments?status=REFUND_REQUIRED', $this->token('ADMIN'))->assertOk()->assertJsonPath('data.total', 1);
     }
+
+    public function test_boleta_without_customer_document_only_below_700(): void
+    {
+        $customer = $this->token();
+        $admin = $this->token('ADMIN');
+        $anonymous = ['type' => '03', 'documentType' => '0', 'documentNumber' => '', 'name' => ''];
+        $order = $this->order($customer, $this->product(), 1, $anonymous);
+        $this->assertSame(['documentType' => '0', 'documentNumber' => '-', 'name' => 'CLIENTES VARIOS'], array_intersect_key($order['billing'], array_flip(['documentType', 'documentNumber', 'name'])));
+        // Factura nunca; boleta solo por debajo de S/ 700.
+        $this->postJson('/api/orders', ['items' => [['productId' => $this->product(5, 'SKU-2')['id'], 'quantity' => 1]], 'billing' => ['type' => '01'] + $anonymous, 'delivery' => self::PICKUP], $customer)->assertUnprocessable();
+        $expensive = app(CatalogService::class)->upsert(['sku' => 'SKU-700', 'name' => 'Laptop', 'price' => '700.00', 'stock' => 3, 'active' => true, 'category' => 'Computación', 'brand' => 'SYSCON']);
+        $this->postJson('/api/orders', ['items' => [['productId' => $expensive['id'], 'quantity' => 1]], 'billing' => $anonymous, 'delivery' => self::PICKUP], $customer)
+            ->assertUnprocessable()->assertJsonPath('message', 'Desde S/ 700 la boleta requiere el documento del cliente.');
+
+        app(OrderService::class)->transition($order['id'], 'PAID');
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()
+            ->assertJsonPath('data.customerDocumentType', '0')->assertJsonPath('data.customerDocumentNumber', '-')->json('data');
+        $xml = DB::table('xml_documents')->where('invoice_id', $boleta['id'])->value('generated_xml');
+        $this->assertStringContainsString('<cbc:ID schemeID="0">-</cbc:ID>', $xml);
+        // Corregir un borrador con un número distinto de "-" no es válido.
+        $this->patchJson('/api/invoices/'.$boleta['id'], ['customerDocumentType' => '0', 'customerDocumentNumber' => '123', 'customerName' => 'X'], $admin)->assertUnprocessable();
+    }
 }

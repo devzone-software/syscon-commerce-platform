@@ -65,6 +65,7 @@ class OrderService
             }
             $deliveryCost = $delivery ? DeliveryData::cost($delivery['method']) : '0.00';
             $total = bcadd($total, $deliveryCost, 2);
+            abort_if(($billing['documentType'] ?? null) === '0' && ! BillingData::anonymousAllowed($total), 422, 'Desde S/ 700 la boleta requiere el documento del cliente.');
             [$base, $igv] = Tax::split($deliveryCost, $rate);
             DB::table('orders')->insert(['id' => $id, 'customer_id' => $customer, 'status' => 'PAYMENT_PENDING', 'total' => $total,
                 'tax_rate' => $rate, 'taxable_amount' => bcadd($taxable, $base, 2), 'tax_amount' => bcadd($tax, $igv, 2),

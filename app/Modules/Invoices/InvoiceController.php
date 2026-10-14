@@ -129,8 +129,9 @@ class InvoiceController
         $data['customerDocumentType'] ??= $order->billing_document_type;
         $data['customerDocumentNumber'] = strtoupper(str_replace(' ', '', trim((string) ($data['customerDocumentNumber'] ?? $order->billing_document_number))));
         $data['customerName'] = trim((string) ($data['customerName'] ?? $order->billing_name));
-        abort_if(! $data['customerDocumentType'] || $data['customerDocumentNumber'] === '' || $data['customerName'] === '', 422, 'Datos del cliente requeridos');
+        abort_if((string) $data['customerDocumentType'] === '' || $data['customerDocumentNumber'] === '' || $data['customerName'] === '', 422, 'Datos del cliente requeridos');
         abort_if($data['type'] === '01' && $data['customerDocumentType'] !== '6', 422, 'La factura requiere el RUC del cliente.');
+        abort_if($data['customerDocumentType'] === '0' && ! BillingData::anonymousAllowed((string) $order->total), 422, 'Desde S/ 700 la boleta requiere el documento del cliente.');
         $error = BillingData::documentError($data['customerDocumentType'], $data['customerDocumentNumber']);
         abort_if($error !== null, 422, $error ?? '');
 

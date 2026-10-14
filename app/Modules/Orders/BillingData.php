@@ -13,7 +13,18 @@ class BillingData
 {
     public const INVOICE_TYPES = ['01', '03'];
 
-    public const DOCUMENT_TYPES = ['1', '4', '6', '7'];
+    public const DOCUMENT_TYPES = ['0', '1', '4', '6', '7'];
+
+    /** Boleta sin documento del cliente (catálogo 06 código 0, número "-"): solo por debajo de este total. */
+    public const ANONYMOUS_LIMIT = '700.00';
+
+    public const ANONYMOUS_NAME = 'CLIENTES VARIOS';
+
+    /** Un total desde el límite exige identificar al cliente de una boleta. */
+    public static function anonymousAllowed(string $total): bool
+    {
+        return bccomp($total, self::ANONYMOUS_LIMIT, 2) < 0;
+    }
 
     /** Reglas de Laravel para un bloque de facturación anidado bajo $prefix (p. ej. "billing."). */
     public static function rules(string $prefix = ''): array
@@ -44,6 +55,7 @@ class BillingData
     public static function documentError(string $documentType, string $number): ?string
     {
         return match ($documentType) {
+            '0' => $number === '-' ? null : 'Sin documento el número es "-".',
             '1' => preg_match('/^\d{8}$/', $number) ? null : 'El DNI tiene 8 dígitos.',
             '6' => self::validRuc($number) ? null : 'El RUC no es válido.',
             '4', '7' => preg_match('/^[A-Z0-9]{6,12}$/', $number) ? null : 'El documento tiene de 6 a 12 letras o números.',
@@ -76,6 +88,10 @@ class BillingData
         }
         if (isset($data['documentNumber']) && is_string($data['documentNumber'])) {
             $data['documentNumber'] = strtoupper(str_replace(' ', '', $data['documentNumber']));
+        }
+        if (($data['documentType'] ?? null) === '0') {
+            $data['documentNumber'] = '-';
+            $data['name'] = ($data['name'] ?? '') === '' ? self::ANONYMOUS_NAME : $data['name'];
         }
         if (array_key_exists('address', $data) && $data['address'] === '') {
             $data['address'] = null;
