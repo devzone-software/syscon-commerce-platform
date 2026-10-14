@@ -16,7 +16,7 @@ class InvoiceController
 
     private const SERIAL = 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/';
 
-    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files, private Notifier $notifier) {}
+    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files, private Notifier $notifier, private InvoiceSubmission $submission) {}
 
     /**
      * Crea el borrador con la serie y el correlativo que asigna el backend. Si el pedido ya tiene
@@ -174,7 +174,7 @@ class InvoiceController
 
         return Api::ok('Comprobantes', DB::table('invoices')->where('order_id', $id)->where('status', 'ACCEPTED')->orderBy('created_at')->get()
             ->map(fn ($i) => ['id' => $i->id, 'type' => $i->type, 'serialNumber' => $i->serial_number, 'status' => $i->status, 'referencedSerialNumber' => $i->referenced_serial_number,
-                'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => DB::table('cdr_responses')->where('invoice_id', $i->id)->exists()])->all());
+                'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => DB::table('cdr_responses')->where('invoice_id', $i->id)->where('zip_base64', '!=', '')->exists()])->all());
     }
 
     public function customerFile(Request $r, string $id, string $invoice, string $format)
@@ -195,44 +195,20 @@ class InvoiceController
 
     public function submit(Request $r, string $id)
     {
-        return DB::transaction(function () use ($r, $id) {
-            $invoice = DB::table('invoices')->where('id', $id)->lockForUpdate()->first();
-            abort_unless($invoice, 404, 'Comprobante no encontrado');
-            if ($invoice->status === 'ACCEPTED') {
-                return Api::ok('Envío procesado', $this->view($id));
-            }
-            abort_unless(in_array($invoice->status, ['DRAFT', 'FAILED'], true), 409, 'Estado de comprobante inválido');
-            abort_unless($this->gateway->configured(), 503, 'Credenciales SUNAT no configuradas');
-            try {
-                // Hasta la primera firma el XML se vuelve a generar: toma el emisor configurado ahora.
-                // Una vez firmado se reenvía el mismo XML, que SUNAT pudo haber recibido.
-                if (DB::table('xml_documents')->where('invoice_id', $id)->value('signed_xml') === null) {
-                    $this->generateXml($id);
-                }
-                $doc = DB::table('xml_documents')->where('invoice_id', $id)->first();
-                $signed = $doc->signed_xml ?? $this->gateway->sign($doc->generated_xml);
-                DB::table('xml_documents')->where('invoice_id', $id)->update(['signed_xml' => $signed]);
-                $cdr = $this->gateway->sendBill(config('commerce.sunat.ruc').'-'.$invoice->type.'-'.$invoice->serial_number, $signed);
-                [$code,$description] = $this->gateway->parseCdr($cdr);
-                $existing = DB::table('cdr_responses')->where('invoice_id', $id)->first();
-                DB::table('cdr_responses')->updateOrInsert(['invoice_id' => $id], ['id' => $existing?->id ?? (string) Str::uuid(), 'zip_base64' => $cdr, 'response_code' => $code, 'description' => $description]);
-                DB::table('invoices')->where('id', $id)->update(['status' => $code === '0' ? 'ACCEPTED' : 'REJECTED', 'error' => null, 'updated_at' => now()]);
-                if ($code === '0') {
-                    // Las notas no mueven stock ni el estado del pedido: la devolución física la registra
-                    // inventario. Quedan en el historial para conciliar lo cobrado con lo facturado.
-                    $event = ['01' => 'INVOICE_ACCEPTED', '03' => 'INVOICE_ACCEPTED', '07' => 'CREDIT_NOTE_ACCEPTED', '08' => 'DEBIT_NOTE_ACCEPTED'][$invoice->type];
-                    $this->orders->record($invoice->order_id, $r->user()?->id, $event, null, null, $invoice->serial_number);
-                    $this->notifier->queue($invoice->order_id, 'INVOICE_AVAILABLE', $invoice->id);
-                }
-            } catch (SunatFault $e) {
-                // Rechazo por contenido: el número queda usado y se corrige con otro comprobante o nota.
-                DB::table('invoices')->where('id', $id)->update(['status' => $e->rejects() ? 'REJECTED' : 'FAILED', 'error' => mb_substr($e->getMessage(), 0, 1000), 'updated_at' => now()]);
-            } catch (\Throwable $e) {
-                DB::table('invoices')->where('id', $id)->update(['status' => 'FAILED', 'error' => mb_substr($e->getMessage(), 0, 1000), 'updated_at' => now()]);
-            }
+        $this->submission->run($id, $r->user()?->id, 'SUBMIT');
 
-            return Api::ok('Envío procesado', $this->view($id));
-        });
+        return Api::ok('Envío procesado', $this->view($id));
+    }
+
+    /** Pendiente de conciliación: consulta el CDR o reenvía el mismo XML firmado (SUNAT responde 1033 si ya lo tenía). */
+    public function reconcile(Request $r, string $id)
+    {
+        $status = DB::table('invoices')->where('id', $id)->value('status');
+        abort_unless($status, 404, 'Comprobante no encontrado');
+        abort_unless(in_array($status, ['PENDING_CHECK', 'FAILED'], true), 409, 'Solo se concilian comprobantes pendientes o con error de envío');
+        $this->submission->run($id, $r->user()?->id, 'RECONCILE');
+
+        return Api::ok('Conciliación procesada', $this->view($id));
     }
 
     private function view(string $id): array
@@ -245,7 +221,9 @@ class InvoiceController
             'customerDocumentType' => $i->customer_document_type, 'customerDocumentNumber' => $i->customer_document_number, 'customerName' => $i->customer_name,
             'referencedSerialNumber' => $i->referenced_serial_number, 'noteCode' => $i->note_code, 'noteReason' => $i->note_reason,
             'taxRate' => bcadd((string) $i->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $i->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $i->tax_amount, '0', 2),
-            'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => $c !== null,
+            'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => ($c?->zip_base64 ?? '') !== '',
+            'attempts' => DB::table('invoice_attempts')->leftJoin('users', 'users.id', '=', 'invoice_attempts.actor_id')->where('invoice_id', $id)->orderBy('invoice_attempts.id')
+                ->get(['invoice_attempts.*', 'users.email'])->map(fn ($a) => ['action' => $a->action, 'result' => $a->result, 'sunatCode' => $a->sunat_code, 'message' => $a->message, 'actor' => $a->email, 'at' => OrderService::iso($a->created_at)])->all(),
             'lines' => array_map(fn ($l) => ['lineNumber' => (int) $l['line_number'], 'productId' => $l['product_id'], 'sku' => $l['sku'], 'description' => $l['description'], 'unitCode' => $l['unit_code'], 'quantity' => (int) $l['quantity'],
                 'unitPrice' => bcadd((string) $l['unit_price'], '0', 2), 'lineTotal' => bcadd((string) $l['line_total'], '0', 2), 'taxableAmount' => bcadd((string) $l['taxable_amount'], '0', 2), 'taxAmount' => bcadd((string) $l['tax_amount'], '0', 2)], $this->linesOf($id))];
     }

@@ -26,6 +26,8 @@ return [
         'endpoint' => env('SUNAT_ENDPOINT', 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService'),
         // Código del establecimiento anexo que emite (0000: domicilio fiscal).
         'establishment_code' => env('SUNAT_ESTABLISHMENT_CODE', '0000'),
+        // Consulta de CDR (getStatusCdr) para conciliar sin reenviar; SUNAT solo la ofrece en producción.
+        'consult_endpoint' => env('SUNAT_CONSULT_ENDPOINT', ''),
         // Domicilio fiscal que figura en la representación impresa.
         'address' => env('SUNAT_ADDRESS', ''),
     ],

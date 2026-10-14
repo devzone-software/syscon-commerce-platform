@@ -42,6 +42,45 @@ class SunatGateway
         return $doc->saveXML();
     }
 
+    /** Hay servicio de consulta de CDR configurado (SUNAT lo ofrece en producción, no en beta). */
+    public function canConsult(): bool
+    {
+        return (string) config('commerce.sunat.consult_endpoint') !== '';
+    }
+
+    /**
+     * getStatusCdr: estado y CDR de un comprobante ya enviado.
+     *
+     * @return array{code: string, message: string, cdr: ?string} cdr es null si SUNAT no lo registra.
+     */
+    public function statusCdr(string $type, string $serial): array
+    {
+        [$series, $number] = explode('-', $serial, 2);
+        $escape = fn ($s) => htmlspecialchars((string) $s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $body = '<ser:getStatusCdr><rucComprobante>'.$escape(config('commerce.sunat.ruc')).'</rucComprobante><tipoComprobante>'.$escape($type).'</tipoComprobante><serieComprobante>'.$escape($series).'</serieComprobante><numeroComprobante>'.$escape($number).'</numeroComprobante></ser:getStatusCdr>';
+        $doc = $this->call((string) config('commerce.sunat.consult_endpoint'), 'urn:getStatusCdr', $body);
+        $code = trim($doc->getElementsByTagNameNS('*', 'statusCode')->item(0)?->textContent ?? '');
+        $content = trim($doc->getElementsByTagNameNS('*', 'content')->item(0)?->textContent ?? '');
+
+        return ['code' => $code, 'message' => trim($doc->getElementsByTagNameNS('*', 'statusMessage')->item(0)?->textContent ?? ''), 'cdr' => $content !== '' ? $content : null];
+    }
+
+    /** Llamada SOAP autenticada con la clave SOL; los SOAP fault se convierten en SunatFault. */
+    private function call(string $endpoint, string $action, string $body): \DOMDocument
+    {
+        if (parse_url($endpoint, PHP_URL_SCHEME) !== 'https') {
+            throw new \RuntimeException('SUNAT requiere HTTPS');
+        }
+        $escape = fn ($s) => htmlspecialchars((string) $s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $payload = '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://service.sunat.gob.pe"><soapenv:Header><wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><wsse:UsernameToken><wsse:Username>'.$escape(config('commerce.sunat.ruc').config('commerce.sunat.user')).'</wsse:Username><wsse:Password>'.$escape(config('commerce.sunat.password')).'</wsse:Password></wsse:UsernameToken></wsse:Security></soapenv:Header><soapenv:Body>'.$body.'</soapenv:Body></soapenv:Envelope>';
+        $response = Http::connectTimeout(10)->timeout(30)->withOptions(['allow_redirects' => false])->withHeaders(['SOAPAction' => $action])->withBody($payload, 'text/xml; charset=utf-8')->post($endpoint);
+        if ($response->status() !== 200) {
+            throw SunatFault::fromSoap($response->body()) ?? new \RuntimeException('SUNAT HTTP '.$response->status());
+        }
+
+        return $this->parseXml($response->body());
+    }
+
     public function sendBill(string $filename, string $xml): string
     {
         $temp = tempnam(sys_get_temp_dir(), 'sunat-');
@@ -56,20 +95,8 @@ class SunatGateway
         } finally {
             unlink($temp);
         }
-        $escape = fn ($s) => htmlspecialchars($s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-        $user = $escape(config('commerce.sunat.ruc').config('commerce.sunat.user'));
-        $pass = $escape(config('commerce.sunat.password'));
-        $name = $escape($filename.'.zip');
-        $payload = '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://service.sunat.gob.pe"><soapenv:Header><wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><wsse:UsernameToken><wsse:Username>'.$user.'</wsse:Username><wsse:Password>'.$pass.'</wsse:Password></wsse:UsernameToken></wsse:Security></soapenv:Header><soapenv:Body><ser:sendBill><fileName>'.$name.'</fileName><contentFile>'.$content.'</contentFile></ser:sendBill></soapenv:Body></soapenv:Envelope>';
-        $endpoint = config('commerce.sunat.endpoint');
-        if (parse_url($endpoint, PHP_URL_SCHEME) !== 'https') {
-            throw new \RuntimeException('SUNAT requiere HTTPS');
-        }
-        $response = Http::connectTimeout(10)->timeout(30)->withOptions(['allow_redirects' => false])->withHeaders(['SOAPAction' => 'urn:sendBill'])->withBody($payload, 'text/xml; charset=utf-8')->post($endpoint);
-        if ($response->status() !== 200) {
-            throw SunatFault::fromSoap($response->body()) ?? new \RuntimeException('SUNAT HTTP '.$response->status());
-        }
-        $doc = $this->parseXml($response->body());
+        $name = htmlspecialchars($filename.'.zip', ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $doc = $this->call((string) config('commerce.sunat.endpoint'), 'urn:sendBill', '<ser:sendBill><fileName>'.$name.'</fileName><contentFile>'.$content.'</contentFile></ser:sendBill>');
         $cdr = $doc->getElementsByTagNameNS('*', 'applicationResponse')->item(0);
         if (! $cdr) {
             throw new \RuntimeException('Respuesta SUNAT sin CDR');

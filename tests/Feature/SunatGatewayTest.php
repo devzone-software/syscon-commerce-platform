@@ -102,6 +102,16 @@ class SunatGatewayTest extends TestCase
         $this->assertSame(['0', 'Aceptada Observaciones: 4252 - El dato ingresado como atributo no corresponde'], app(SunatGateway::class)->parseCdr($cdr));
     }
 
+    public function test_status_cdr_query_reads_code_and_content(): void
+    {
+        config(['commerce.sunat.ruc' => '20123456789', 'commerce.sunat.user' => 'USER', 'commerce.sunat.password' => 'x', 'commerce.sunat.consult_endpoint' => 'https://e-factura.sunat.gob.pe/ol-it-wsconscpegem/billConsultService']);
+        Http::fake(['*' => Http::response('<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/"><S:Body><ns2:getStatusCdrResponse xmlns:ns2="http://service.sunat.gob.pe"><statusCdr><content>UEsDBA==</content><statusCode>0004</statusCode><statusMessage>La constancia existe</statusMessage></statusCdr></ns2:getStatusCdrResponse></S:Body></S:Envelope>', 200)]);
+        $gateway = app(SunatGateway::class);
+        $this->assertTrue($gateway->canConsult());
+        $this->assertSame(['code' => '0004', 'message' => 'La constancia existe', 'cdr' => 'UEsDBA=='], $gateway->statusCdr('01', 'F001-25'));
+        Http::assertSent(fn ($r) => str_contains($r->body(), '<serieComprobante>F001</serieComprobante><numeroComprobante>25</numeroComprobante>') && $r->header('SOAPAction')[0] === 'urn:getStatusCdr');
+    }
+
     public function test_cdr_with_external_entities_is_rejected(): void
     {
         $cdr = $this->cdr('<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><Response><ResponseCode>&xxe;</ResponseCode></Response>');

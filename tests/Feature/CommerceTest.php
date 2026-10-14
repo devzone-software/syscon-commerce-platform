@@ -5,11 +5,14 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Modules\Catalog\CatalogService;
 use App\Modules\Invoices\InvoiceFiles;
+use App\Modules\Invoices\InvoiceSubmission;
+use App\Modules\Invoices\SunatFault;
 use App\Modules\Invoices\SunatGateway;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Notifications\OrderMail;
 use App\Modules\Orders\OrderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Mail\MailManager;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
@@ -919,5 +922,54 @@ class CommerceTest extends TestCase
         $summary = $this->getJson('/api/admin/reports/summary', $admin)->assertOk()->json('data.sales');
         $this->assertSame(['orders' => 2, 'total' => '40.60'], $summary['byChannel']['STORE']);
         $this->assertEqualsCanonicalizing([['method' => 'CASH', 'payments' => 1, 'total' => '20.30'], ['method' => 'YAPE', 'payments' => 1, 'total' => '20.30']], $summary['byPaymentMethod']);
+    }
+
+    public function test_lost_sunat_responses_are_reconciled_without_duplicating_documents(): void
+    {
+        Mail::fake();
+        [$order, $admin] = $this->paidOrder();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->json('data');
+        $gateway = $this->mock(SunatGateway::class);
+        $gateway->shouldReceive('configured')->andReturn(true);
+        $gateway->shouldReceive('canConsult')->andReturn(false);
+        // Se firma una sola vez: todos los reenvíos usan el mismo XML.
+        $gateway->shouldReceive('sign')->once()->andReturn('<signed-once/>');
+        $gateway->shouldReceive('sendBill')->once()->with('-03-B001-1', '<signed-once/>')->andThrow(new ConnectionException('Operation timed out'));
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'PENDING_CHECK');
+        $this->postJson('/api/invoices/'.$boleta['id'].'/reconcile', [], $this->token())->assertForbidden();
+
+        // SUNAT sí lo había recibido: el reenvío del mismo XML responde 1033 y queda aceptado.
+        $gateway->shouldReceive('sendBill')->once()->with('-03-B001-1', '<signed-once/>')->andThrow(new SunatFault('1033', 'El comprobante fue registrado previamente con otros datos'));
+        $data = $this->postJson('/api/invoices/'.$boleta['id'].'/reconcile', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED')->assertJsonPath('data.hasCdr', false)->json('data');
+        $this->assertSame([['SUBMIT', 'PENDING_CHECK', null], ['RECONCILE', 'ACCEPTED', '1033']], array_map(fn ($a) => [$a['action'], $a['result'], $a['sunatCode']], $data['attempts']));
+        $this->assertStringContainsString('Registrado previamente', $data['sunatDescription']);
+        $this->get('/api/invoices/'.$boleta['id'].'/cdr', $admin)->assertNotFound();
+        $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'INVOICE_ACCEPTED', 'reference' => 'B001-1']);
+        Mail::assertSent(OrderMail::class, fn ($m) => $m->kind === 'INVOICE_AVAILABLE');
+        $this->postJson('/api/invoices/'.$boleta['id'].'/reconcile', [], $admin)->assertConflict();
+        $this->assertDatabaseCount('invoices', 1);
+    }
+
+    public function test_reconciliation_uses_the_cdr_query_service_when_available(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $first = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->json('data');
+        DB::table('invoices')->where('id', $first['id'])->update(['status' => 'PENDING_CHECK', 'updated_at' => now()->subMinutes(10)]);
+        DB::table('xml_documents')->where('invoice_id', $first['id'])->update(['signed_xml' => '<signed/>']);
+        $gateway = $this->mock(SunatGateway::class);
+        $gateway->shouldReceive('configured')->andReturn(true);
+        $gateway->shouldReceive('canConsult')->andReturn(true);
+        $gateway->shouldNotReceive('sendBill');
+        // SUNAT no lo registra: queda listo para enviarse de nuevo, sin reenviar a ciegas.
+        $gateway->shouldReceive('statusCdr')->once()->with('03', 'B001-1')->andReturn(['code' => '0127', 'message' => 'El ticket no existe', 'cdr' => null]);
+        $this->postJson('/api/invoices/'.$first['id'].'/reconcile', [], $admin)->assertOk()->assertJsonPath('data.status', 'FAILED')->assertJsonPath('data.attempts.0.sunatCode', '0127');
+        // Con CDR disponible, el scheduler lo concilia y guarda la constancia.
+        DB::table('invoices')->where('id', $first['id'])->update(['status' => 'PENDING_CHECK', 'updated_at' => now()->subMinutes(10)]);
+        $gateway->shouldReceive('statusCdr')->once()->andReturn(['code' => '0004', 'message' => 'La constancia existe', 'cdr' => 'CDR-ZIP']);
+        $gateway->shouldReceive('parseCdr')->once()->with('CDR-ZIP')->andReturn(['0', 'La Boleta numero B001-1, ha sido aceptada']);
+        $this->assertSame(1, app(InvoiceSubmission::class)->reconcilePending());
+        $this->assertDatabaseHas('invoices', ['id' => $first['id'], 'status' => 'ACCEPTED']);
+        $this->assertDatabaseHas('invoice_attempts', ['invoice_id' => $first['id'], 'action' => 'RECONCILE', 'result' => 'ACCEPTED', 'actor_id' => null]);
+        $this->assertSame(0, app(InvoiceSubmission::class)->reconcilePending());
     }
 }

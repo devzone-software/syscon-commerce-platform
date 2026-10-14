@@ -1,5 +1,6 @@
 <?php
 
+use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
 use App\Modules\Suppliers\SupplierService;
@@ -40,6 +41,13 @@ Artisan::command('sunat:test-certificate {path=certificates/sunat-prueba.p12}', 
     $this->info('Certificado de prueba creado. Agrega al .env:');
     $this->line("SUNAT_RUC=20000000001\nSUNAT_SOL_USER=MODDATOS\nSUNAT_SOL_PASSWORD=moddatos\nSUNAT_CERTIFICATE_PATH=\"".str_replace('\\', '/', $file)."\"\nSUNAT_CERTIFICATE_PASSWORD=$password");
 })->purpose('Genera un certificado autofirmado para enviar comprobantes al servicio beta de SUNAT');
+Artisan::command('invoices:reconcile', function (InvoiceSubmission $submission) {
+    $this->info('Comprobantes conciliados: '.$submission->reconcilePending());
+})->purpose('Concilia con SUNAT los comprobantes que quedaron sin respuesta');
+Schedule::call(fn () => Artisan::call('invoices:reconcile'))
+    ->name('invoices-reconcile')
+    ->everyTenMinutes()
+    ->withoutOverlapping();
 Artisan::command('notifications:send', function (Notifier $notifier) {
     $this->info('Avisos enviados: '.$notifier->sendDue());
 })->purpose('Envía los correos pendientes y reintenta los fallidos cuyo plazo venció');
