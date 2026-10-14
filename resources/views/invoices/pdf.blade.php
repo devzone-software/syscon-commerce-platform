@@ -98,6 +98,10 @@
     <tr class="total"><td>Importe total</td><td class="num">{{ $money($invoice->total) }}</td></tr>
 </table>
 
+@if($qr)
+    <div style="margin-top:14px;"><img src="{{ $qr }}" width="110" height="110" alt="Código QR"></div>
+@endif
+
 <div class="foot">
     @if($warning)
         Este documento no es una representación impresa válida de un comprobante electrónico.

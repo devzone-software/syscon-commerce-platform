@@ -3,6 +3,10 @@
 namespace App\Modules\Invoices;
 
 use App\Modules\Orders\Tax;
+use BaconQrCode\Renderer\Image\SvgImageBackEnd;
+use BaconQrCode\Renderer\ImageRenderer;
+use BaconQrCode\Renderer\RendererStyle\RendererStyle;
+use BaconQrCode\Writer;
 use Dompdf\Dompdf;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -63,6 +67,7 @@ class InvoiceFiles
         return view('invoices.pdf', [
             'invoice' => $invoice, 'lines' => $lines, 'title' => self::TITLES[$invoice->type],
             'warning' => self::warning($invoice), 'hash' => $invoice->status === 'ACCEPTED' ? self::digest($signed) : null,
+            'qr' => $invoice->status === 'ACCEPTED' ? self::qr($invoice, self::digest($signed)) : null,
             'issued' => Carbon::parse($invoice->created_at)->setTimezone('America/Lima'),
             'percent' => rtrim(rtrim(bcmul((string) $invoice->tax_rate, '100', 2), '0'), '.'),
             'reason' => $invoice->note_code ? (($invoice->type === '07' ? InvoiceLines::CREDIT_REASONS : InvoiceLines::DEBIT_REASONS)[$invoice->note_code] ?? null) : null,
@@ -87,6 +92,27 @@ class InvoiceFiles
         abort_unless($zip, 404, 'El comprobante no tiene CDR');
 
         return $this->file((string) base64_decode($zip, true), 'application/zip', 'R-'.self::filename($invoice, 'zip'), false);
+    }
+
+    /**
+     * Contenido del código QR de la representación impresa (formato SUNAT):
+     * RUC | tipo | serie | número | IGV | total | fecha de emisión | tipo y número de documento del
+     * adquirente | valor resumen |
+     */
+    public static function qrText(object $invoice, ?string $hash): string
+    {
+        [$series, $number] = explode('-', $invoice->serial_number, 2);
+
+        return implode('|', [config('commerce.sunat.ruc'), $invoice->type, $series, $number, bcadd((string) $invoice->tax_amount, '0', 2), bcadd((string) $invoice->total, '0', 2),
+            Carbon::parse($invoice->created_at)->setTimezone('America/Lima')->toDateString(), $invoice->customer_document_type, $invoice->customer_document_number, $hash ?? '']).'|';
+    }
+
+    /** QR en SVG como data URI para el PDF. */
+    private static function qr(object $invoice, ?string $hash): string
+    {
+        $svg = (new Writer(new ImageRenderer(new RendererStyle(140, 1), new SvgImageBackEnd)))->writeString(self::qrText($invoice, $hash));
+
+        return 'data:image/svg+xml;base64,'.base64_encode($svg);
     }
 
     /** Valor resumen (DigestValue) de la firma, que la representación impresa muestra. */

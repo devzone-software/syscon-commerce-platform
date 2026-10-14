@@ -15,6 +15,7 @@
         "ext-openssl": "*",
         "ext-pdo": "*",
         "ext-zip": "*",
+        "bacon/bacon-qr-code": "^3.0",
         "dompdf/dompdf": "^3.1",
         "firebase/php-jwt": "^7.2",
         "laravel/framework": "^13.17",

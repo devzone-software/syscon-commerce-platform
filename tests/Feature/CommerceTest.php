@@ -717,6 +717,8 @@ class CommerceTest extends TestCase
         $this->assertStringNotContainsString('sin valor tributario', $html);
         $this->assertStringContainsString('Representación impresa de la factura electrónica', $html);
         $this->assertStringContainsString('Valor resumen: abc123=', $html);
+        $this->assertStringContainsString('src="data:image/svg+xml;base64,', $html);
+        $this->assertSame('20999999995|01|F001|1|3.10|20.30|'.now('America/Lima')->toDateString().'|6|'.self::RUC.'|abc123=|', InvoiceFiles::qrText($row(), 'abc123='));
         DB::table('invoices')->where('id', $invoice['id'])->update(['status' => 'REJECTED']);
         $this->assertStringContainsString('Rechazado por SUNAT', app(InvoiceFiles::class)->html($row()));
     }
