@@ -15,7 +15,7 @@ trap 'rm -rf -- "$stage"' EXIT
 mkdir -p "$stage/export/syscon" "$stage/export/public_html" "$(dirname -- "$destination")"
 
 # Only application files enter the package; development secrets stay on this machine.
-for path in app bootstrap config database docs public routes artisan composer.json composer.lock; do
+for path in app bootstrap config database docs public resources routes artisan composer.json composer.lock; do
     cp -R -- "$project_root/$path" "$stage/export/syscon/"
 done
 cp -- "$project_root/.env.hostinger.example" "$stage/export/syscon/.env.example"

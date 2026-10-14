@@ -33,6 +33,9 @@ Route::middleware('jwt')->group(function () {
     Route::get('orders', [OrderController::class, 'index']);
     Route::post('orders', [OrderController::class, 'store']);
     Route::get('orders/{id}', [OrderController::class, 'show'])->whereUuid('id');
+    // Comprobantes del cliente: solo los aceptados de sus propios pedidos.
+    Route::get('orders/{id}/invoices', [InvoiceController::class, 'ofOrder'])->whereUuid('id');
+    Route::get('orders/{id}/invoices/{invoice}/{format}', [InvoiceController::class, 'customerFile'])->whereUuid(['id', 'invoice'])->whereIn('format', ['pdf', 'xml', 'cdr']);
     Route::patch('orders/{id}/status/{status}', [OrderController::class, 'status'])->middleware('permission:orders:manage')->whereUuid('id');
     Route::prefix('admin')->group(function () {
         Route::get('orders', [AdminOrderController::class, 'index'])->middleware('permission:orders:manage');
@@ -57,5 +60,6 @@ Route::middleware('jwt')->group(function () {
         Route::get('{id}', 'show')->whereUuid('id');
         Route::patch('{id}', 'update')->whereUuid('id');
         Route::post('{id}/submit', 'submit')->whereUuid('id');
+        Route::get('{id}/{format}', 'file')->whereUuid('id')->whereIn('format', ['pdf', 'xml', 'cdr']);
     });
 });

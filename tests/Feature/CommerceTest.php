@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Catalog\CatalogService;
+use App\Modules\Invoices\InvoiceFiles;
 use App\Modules\Invoices\SunatGateway;
 use App\Modules\Orders\OrderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -678,5 +679,65 @@ class CommerceTest extends TestCase
         $gateway->shouldReceive('configured')->andReturn(true);
         $gateway->shouldReceive('sign')->andThrow(new \RuntimeException('Firma inválida'));
         $this->postJson('/api/invoices/'.$i['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'FAILED')->assertJsonPath('data.error', 'Firma inválida');
+    }
+
+    public function test_printed_invoice_uses_stored_lines_and_states_its_validity(): void
+    {
+        config(['commerce.sunat.ruc' => '20999999995', 'commerce.sunat.legal_name' => 'SYSCON S.A.C.', 'commerce.sunat.address' => 'Av. Arequipa 123, Lima']);
+        [$order, $admin] = $this->paidOrder();
+        $invoice = $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->json('data');
+        $row = fn () => DB::table('invoices')->where('id', $invoice['id'])->first();
+        $html = app(InvoiceFiles::class)->html($row());
+        foreach (['SYSCON S.A.C.', 'Av. Arequipa 123, Lima', 'RUC 20999999995', 'Factura electrónica', 'F001-1', 'Cliente &amp; Cía', self::RUC, 'Producto &amp; prueba', 'S/ 17.20', 'S/ 3.10', 'S/ 20.30', 'IGV (18%)', 'Contado', 'Borrador'] as $text) {
+            $this->assertStringContainsString($text, $html);
+        }
+
+        $pdf = $this->get('/api/invoices/'.$invoice['id'].'/pdf', $admin)->assertOk()->assertHeader('Content-Type', 'application/pdf');
+        $this->assertStringStartsWith('%PDF-', $pdf->getContent());
+        $this->assertStringContainsString('20999999995-01-F001-1.pdf', $pdf->headers->get('Content-Disposition'));
+        $this->get('/api/invoices/'.$invoice['id'].'/xml', $admin)->assertOk()->assertHeader('Content-Type', 'application/xml');
+        $this->get('/api/invoices/'.$invoice['id'].'/cdr', $admin)->assertNotFound();
+        $this->get('/api/invoices/'.$invoice['id'].'/pdf', $this->token())->assertForbidden();
+
+        // Aceptado por el servicio beta: es una prueba; en producción es la representación válida.
+        DB::table('invoices')->where('id', $invoice['id'])->update(['status' => 'ACCEPTED']);
+        DB::table('xml_documents')->where('invoice_id', $invoice['id'])->update(['signed_xml' => '<x><ds:DigestValue>abc123=</ds:DigestValue></x>']);
+        $this->assertStringContainsString('Documento de prueba', app(InvoiceFiles::class)->html($row()));
+        config(['commerce.sunat.endpoint' => 'https://e-factura.sunat.gob.pe/ol-ti-itcpfegem/billService']);
+        $html = app(InvoiceFiles::class)->html($row());
+        $this->assertStringNotContainsString('sin valor tributario', $html);
+        $this->assertStringContainsString('Representación impresa de la factura electrónica', $html);
+        $this->assertStringContainsString('Valor resumen: abc123=', $html);
+        DB::table('invoices')->where('id', $invoice['id'])->update(['status' => 'REJECTED']);
+        $this->assertStringContainsString('Rechazado por SUNAT', app(InvoiceFiles::class)->html($row()));
+    }
+
+    public function test_customers_download_only_accepted_documents_of_their_orders(): void
+    {
+        $customer = $this->token();
+        $admin = $this->token('ADMIN');
+        $order = $this->order($customer, $this->product());
+        app(OrderService::class)->transition($order['id'], 'PAID');
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data');
+        $list = '/api/orders/'.$order['id'].'/invoices';
+        $file = $list.'/'.$boleta['id'];
+
+        // El borrador no se muestra ni se descarga.
+        $this->getJson($list, $customer)->assertOk()->assertJsonCount(0, 'data');
+        $this->get($file.'/pdf', $customer)->assertNotFound();
+        $this->acceptSubmissions();
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.hasCdr', true);
+
+        $this->getJson($list, $customer)->assertOk()->assertJsonPath('data.0.serialNumber', 'B001-1')->assertJsonPath('data.0.test', true)->assertJsonPath('data.0.hasCdr', true);
+        $this->get($file.'/pdf', $customer)->assertOk()->assertHeader('Content-Type', 'application/pdf');
+        $this->get($file.'/xml', $customer)->assertOk()->assertHeader('Content-Disposition', 'attachment; filename="SYSCON-03-B001-1.xml"');
+        $this->get($file.'/cdr', $customer)->assertOk()->assertHeader('Content-Type', 'application/zip');
+        $this->get($file.'/txt', $customer)->assertNotFound();
+        // Pedido ajeno y comprobante de otro pedido.
+        $this->getJson($list, $this->token())->assertForbidden();
+        $this->get($file.'/pdf', $this->token())->assertForbidden();
+        $other = $this->order($customer, $this->product(5, 'SKU-2'));
+        $this->get('/api/orders/'.$other['id'].'/invoices/'.$boleta['id'].'/pdf', $customer)->assertNotFound();
+        $this->getJson('/api/orders/'.Str::uuid().'/invoices', $customer)->assertNotFound();
     }
 }

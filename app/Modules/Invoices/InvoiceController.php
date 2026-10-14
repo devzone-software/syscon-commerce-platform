@@ -15,7 +15,7 @@ class InvoiceController
 
     private const SERIAL = 'regex:/^[FB][A-Z0-9]{3}-[1-9][0-9]{0,7}$/';
 
-    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines) {}
+    public function __construct(private OrderService $orders, private UblXmlBuilder $builder, private SunatGateway $gateway, private InvoiceNumbering $numbering, private InvoiceLines $lines, private InvoiceFiles $files) {}
 
     /**
      * Crea el borrador con la serie y el correlativo que asigna el backend. Si el pedido ya tiene
@@ -157,6 +157,41 @@ class InvoiceController
         return Api::ok('Comprobante', $this->view($id));
     }
 
+    /** Administración: PDF de cualquier estado (con su advertencia), XML y CDR. */
+    public function file(string $id, string $format)
+    {
+        $invoice = DB::table('invoices')->where('id', $id)->first();
+        abort_unless($invoice, 404, 'Comprobante no encontrado');
+
+        return $this->files->{$format}($invoice);
+    }
+
+    /** Comprobantes que el cliente puede descargar: los aceptados por SUNAT de su pedido. */
+    public function ofOrder(Request $r, string $id)
+    {
+        $this->ownOrder($r, $id);
+
+        return Api::ok('Comprobantes', DB::table('invoices')->where('order_id', $id)->where('status', 'ACCEPTED')->orderBy('created_at')->get()
+            ->map(fn ($i) => ['id' => $i->id, 'type' => $i->type, 'serialNumber' => $i->serial_number, 'status' => $i->status, 'referencedSerialNumber' => $i->referenced_serial_number,
+                'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => DB::table('cdr_responses')->where('invoice_id', $i->id)->exists()])->all());
+    }
+
+    public function customerFile(Request $r, string $id, string $invoice, string $format)
+    {
+        $this->ownOrder($r, $id);
+        $row = DB::table('invoices')->where('id', $invoice)->where('order_id', $id)->where('status', 'ACCEPTED')->first();
+        abort_unless($row, 404, 'Comprobante no disponible');
+
+        return $this->files->{$format}($row);
+    }
+
+    private function ownOrder(Request $r, string $id): void
+    {
+        $customer = DB::table('orders')->where('id', $id)->value('customer_id');
+        abort_unless($customer, 404, 'Pedido no encontrado');
+        abort_unless($customer === $r->user()->id || in_array('orders:manage', $r->user()->permissions(), true), 403, 'Acceso denegado');
+    }
+
     public function submit(Request $r, string $id)
     {
         return DB::transaction(function () use ($r, $id) {
@@ -200,7 +235,7 @@ class InvoiceController
             'customerDocumentType' => $i->customer_document_type, 'customerDocumentNumber' => $i->customer_document_number, 'customerName' => $i->customer_name,
             'referencedSerialNumber' => $i->referenced_serial_number, 'noteCode' => $i->note_code, 'noteReason' => $i->note_reason,
             'taxRate' => bcadd((string) $i->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $i->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $i->tax_amount, '0', 2),
-            'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at),
+            'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => $c !== null,
             'lines' => array_map(fn ($l) => ['lineNumber' => (int) $l['line_number'], 'productId' => $l['product_id'], 'sku' => $l['sku'], 'description' => $l['description'], 'unitCode' => $l['unit_code'], 'quantity' => (int) $l['quantity'],
                 'unitPrice' => bcadd((string) $l['unit_price'], '0', 2), 'lineTotal' => bcadd((string) $l['line_total'], '0', 2), 'taxableAmount' => bcadd((string) $l['taxable_amount'], '0', 2), 'taxAmount' => bcadd((string) $l['tax_amount'], '0', 2)], $this->linesOf($id))];
     }
