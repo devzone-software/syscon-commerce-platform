@@ -13,7 +13,7 @@ Complementa la [guía de Hostinger](HOSTINGER.md). Revisado el 14 de octubre de 
 | `SUNAT_ENDPOINT` | Servicio de envío. Si contiene "beta", todo lo aceptado se imprime como documento de prueba. | Endpoint de producción de SUNAT (o del OSE). |
 | `SUNAT_CONSULT_ENDPOINT` | Consulta del CDR (getStatusCdr) para conciliar sin reenviar. | Servicio de consulta de producción. |
 | `MAIL_*`, `WEB_URL` | Correos al cliente y enlace a "Mi pedido". | SMTP del dominio. |
-| `RUC_LOOKUP_DRIVER` | `none` o `fake`. | `none` hasta contratar un proveedor real. |
+| `RUC_LOOKUP_DRIVER`, `RUC_LOOKUP_TOKEN` | Consulta de RUC: `migo` (proveedor real), `fake` (datos de prueba) o `none`. Con `migo` sin token queda desactivada. | `migo` con el token de api.migo.pe/tokens; nunca `fake`. |
 | `PAYMENT_SANDBOX`, `PAYMENT_SANDBOX_SECRET` | Pasarela simulada. | `false`: nunca habilitarla. |
 | `ORDER_RESERVATION_HOURS`, `MANUAL_PAYMENT_INSTRUCTIONS`, `DELIVERY_FEE`, `PICKUP_*` | Reserva de stock, instrucciones de pago manual y entrega. | Según la operación. |
 

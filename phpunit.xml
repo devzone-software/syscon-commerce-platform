@@ -32,6 +32,7 @@
         <!-- Las pruebas nunca usan las credenciales SUNAT del .env local ni envían a SUNAT. -->
         <env name="SUNAT_RUC" value="" force="true"/>
         <env name="RUC_LOOKUP_DRIVER" value="none" force="true"/>
+        <env name="RUC_LOOKUP_TOKEN" value="" force="true"/>
         <env name="PAYMENT_SANDBOX" value="false" force="true"/>
         <env name="SUNAT_LEGAL_NAME" value="SYSCON" force="true"/>
         <env name="SUNAT_SOL_USER" value="" force="true"/>

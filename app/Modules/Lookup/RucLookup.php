@@ -3,15 +3,17 @@
 namespace App\Modules\Lookup;
 
 use App\Modules\Orders\BillingData;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Consulta de razón social y estado de un RUC. El formato y el dígito verificador se validan
  * aquí, sin consultar; la identidad la responde el proveedor configurado en RUC_LOOKUP_DRIVER:
+ * - migo: API de MIGO (api.migo.pe), con el token de RUC_LOOKUP_TOKEN.
  * - fake: datos ficticios deterministas para desarrollo y pruebas (no consulta a nadie).
  * - none: consulta desactivada; el cliente escribe la razón social.
- * El proveedor real se agrega como otro driver cuando se contrate.
  */
 class RucLookup
 {
@@ -28,9 +30,14 @@ class RucLookup
         return (string) config('commerce.ruc_lookup.driver', 'none');
     }
 
+    /** Un proveedor real sin token cuenta como desactivado: no se gasta una llamada que fallará. */
     public function enabled(): bool
     {
-        return $this->driver() !== 'none';
+        return match ($this->driver()) {
+            'none' => false,
+            'migo' => (string) config('commerce.ruc_lookup.token') !== '',
+            default => true,
+        };
     }
 
     /**
@@ -46,6 +53,7 @@ class RucLookup
         return Cache::remember('ruc:'.$this->driver().':'.$ruc, now()->addDay(), function () use ($ruc) {
             $data = match ($this->driver()) {
                 'fake' => $this->fake($ruc),
+                'migo' => $this->migo($ruc),
                 default => throw new LookupUnavailable('Proveedor de RUC desconocido: '.$this->driver()),
             };
             $base = ['ruc' => $ruc, 'source' => $this->driver(), 'checkedAt' => now()->toIso8601String()];
@@ -70,6 +78,34 @@ class RucLookup
         }
 
         return array_intersect_key($result, array_flip(['found', 'name', 'status', 'condition', 'source', 'checkedAt']));
+    }
+
+    /**
+     * GET {url}/{ruc} con token Bearer. 404 = SUNAT no registra el RUC; cualquier otra falla
+     * (token rechazado, límite del plan, caída) es LookupUnavailable y no se guarda en caché.
+     */
+    private function migo(string $ruc): ?array
+    {
+        try {
+            $response = Http::acceptJson()->withToken((string) config('commerce.ruc_lookup.token'))
+                ->connectTimeout(5)->timeout(10)->get(rtrim((string) config('commerce.ruc_lookup.url'), '/').'/'.$ruc);
+        } catch (ConnectionException $e) {
+            throw new LookupUnavailable('MIGO no respondió: '.$e->getMessage());
+        }
+        if ($response->status() === 404) {
+            return null;
+        }
+        if (! $response->successful() || $response->json('success') !== true || ! is_string($response->json('nombre_o_razon_social'))) {
+            throw new LookupUnavailable('MIGO respondió '.$response->status().': '.$response->json('message', 'respuesta inesperada'));
+        }
+        $text = fn (string $key) => ($value = trim((string) $response->json($key))) === '' || $value === '-' ? null : $value;
+
+        return [
+            'name' => $text('nombre_o_razon_social'),
+            'status' => strtoupper((string) $text('estado_del_contribuyente')),
+            'condition' => strtoupper((string) $text('condicion_de_domicilio')),
+            'address' => $text('direccion'),
+        ];
     }
 
     private function fake(string $ruc): ?array

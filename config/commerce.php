@@ -20,8 +20,9 @@ return [
         // Pasarela simulada para pruebas: nunca activarla en producción.
         'sandbox' => ['enabled' => (bool) env('PAYMENT_SANDBOX', false), 'secret' => (string) env('PAYMENT_SANDBOX_SECRET', '')]],
     // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.
-    // Consulta de RUC: fake (datos de prueba) o none; el proveedor real se agrega como driver.
-    'ruc_lookup' => ['driver' => env('RUC_LOOKUP_DRIVER', 'none')],
+    // Consulta de RUC: migo (proveedor real, necesita token), fake (datos de prueba) o none.
+    'ruc_lookup' => ['driver' => env('RUC_LOOKUP_DRIVER', 'none'), 'token' => (string) env('RUC_LOOKUP_TOKEN', ''),
+        'url' => env('RUC_LOOKUP_URL', 'https://api.migo.pe/api/v2/ruc')],
     'tax' => ['igv_rate' => env('IGV_RATE', '0.18')],
     'sunat' => [
         'ruc' => env('SUNAT_RUC', ''), 'legal_name' => env('SUNAT_LEGAL_NAME', 'SYSCON'),

@@ -94,7 +94,7 @@ Se avisa al cliente cuando se crea su pedido, cuando se confirma el pago y cuand
 
 ## Consulta de RUC y pasarela de pago (modo prueba)
 
-`RUC_LOOKUP_DRIVER=fake` responde con datos ficticios (`GET /api/lookup/ruc/{ruc}`; 20100000009 simula baja/no habido y 20600000005 no encontrado); `none` la desactiva. El pedido guarda lo verificado en `billing_verification`; si la consulta falla la compra continúa.
+`RUC_LOOKUP_DRIVER=migo` consulta el RUC en [MIGO](https://api.migo.pe) con el token de `RUC_LOOKUP_TOKEN` (sin token queda desactivada); las respuestas se guardan 24 h y un límite del plan o una caída no se guardan. `fake` responde con datos ficticios (`GET /api/lookup/ruc/{ruc}`; 20100000009 simula baja/no habido y 20600000005 no encontrado); `none` la desactiva. El pedido guarda lo verificado en `billing_verification`; si la consulta falla la compra continúa.
 
 `PAYMENT_SANDBOX=true` y `PAYMENT_SANDBOX_SECRET` habilitan la pasarela simulada: `POST /api/payments` con `provider: SANDBOX` devuelve la URL de su página de pago (`/sandbox/checkout/{id}`), que firma el evento con HMAC-SHA256 y lo entrega a `POST /api/payments/webhooks/sandbox`. El webhook valida firma, importe, moneda y pedido, confirma con la misma transacción que el pago manual y es idempotente. Nunca activarla en producción.
 

@@ -1098,6 +1098,38 @@ class CommerceTest extends TestCase
         $this->getJson('/api/lookup/ruc/20123456786', $customer)->assertStatus(503);
     }
 
+    public function test_migo_driver_maps_the_provider_response_and_its_failures(): void
+    {
+        $customer = $this->token();
+        Http::fake([
+            'api.migo.pe/api/v2/ruc/20123456786' => Http::response(['success' => true, 'ruc' => '20123456786', 'nombre_o_razon_social' => 'COMERCIAL ANDINA S.A.C.',
+                'estado_del_contribuyente' => 'ACTIVO', 'condicion_de_domicilio' => 'HABIDO', 'direccion' => 'AV. AREQUIPA 123 LIMA - LIMA - LIMA']),
+            'api.migo.pe/api/v2/ruc/20100000009' => Http::response(['success' => true, 'nombre_o_razon_social' => 'EMPRESA DADA DE BAJA S.A.',
+                'estado_del_contribuyente' => 'baja de oficio', 'condicion_de_domicilio' => 'no habido', 'direccion' => '-']),
+            'api.migo.pe/api/v2/ruc/20600000005' => Http::response(['success' => false, 'message' => 'No se encontró el RUC'], 404),
+            'api.migo.pe/api/v2/ruc/20000000001' => Http::sequence()->push(['success' => false, 'message' => 'Límite alcanzado'], 429)
+                ->push(['success' => true, 'nombre_o_razon_social' => 'SYSCON PRUEBA S.A.C.', 'estado_del_contribuyente' => 'ACTIVO', 'condicion_de_domicilio' => 'HABIDO']),
+        ]);
+        // Sin token, migo queda desactivado y no se llama al proveedor.
+        config(['commerce.ruc_lookup.driver' => 'migo', 'commerce.ruc_lookup.token' => '']);
+        $this->getJson('/api/lookup/ruc/20000000001', $customer)->assertStatus(503);
+        Http::assertNothingSent();
+
+        config(['commerce.ruc_lookup.token' => 'tok-123', 'commerce.ruc_lookup.url' => 'https://api.migo.pe/api/v2/ruc']);
+        $this->getJson('/api/lookup/ruc/20123456786', $customer)->assertOk()->assertJsonPath('data.source', 'migo')
+            ->assertJsonPath('data.name', 'COMERCIAL ANDINA S.A.C.')->assertJsonPath('data.active', true)->assertJsonPath('data.address', 'AV. AREQUIPA 123 LIMA - LIMA - LIMA');
+        Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer tok-123'));
+        $this->getJson('/api/lookup/ruc/20100000009', $customer)->assertOk()->assertJsonPath('data.active', false)
+            ->assertJsonPath('data.status', 'BAJA DE OFICIO')->assertJsonPath('data.address', null);
+        $this->getJson('/api/lookup/ruc/20600000005', $customer)->assertNotFound();
+        // Un límite o una caída no se guardan en caché: la siguiente consulta vuelve a preguntar.
+        $this->getJson('/api/lookup/ruc/20000000001', $customer)->assertStatus(503);
+        $this->getJson('/api/lookup/ruc/20000000001', $customer)->assertOk()->assertJsonPath('data.name', 'SYSCON PRUEBA S.A.C.');
+        // Las respuestas válidas sí quedan en caché un día.
+        $this->getJson('/api/lookup/ruc/20123456786', $customer)->assertOk();
+        Http::assertSentCount(5);
+    }
+
     public function test_orders_keep_what_was_verified_about_the_ruc(): void
     {
         $customer = $this->token();
