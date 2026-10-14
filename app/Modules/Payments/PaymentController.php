@@ -14,17 +14,21 @@ class PaymentController
 
     public function store(Request $r)
     {
-        $data = $r->validate(['orderId' => 'required|uuid', 'provider' => 'required|in:MANUAL']);
+        $data = $r->validate(['orderId' => 'required|uuid', 'provider' => 'required|in:MANUAL,'.implode(',', GatewayPayments::PROVIDERS)]);
+        abort_if($data['provider'] !== 'MANUAL' && ! GatewayPayments::enabled($data['provider']), 422, 'Medio de pago no disponible');
 
         return DB::transaction(function () use ($r, $data) {
             $o = DB::table('orders')->where('id', $data['orderId'])->lockForUpdate()->first();
             abort_unless($o, 404, 'Pedido no encontrado');
             abort_unless($o->customer_id === $r->user()->id, 403, 'Pedido ajeno');
             abort_unless($o->status === 'PAYMENT_PENDING', 409, 'Pedido no pendiente');
-            $p = DB::table('payments')->where('order_id', $o->id)->where('provider', $data['provider'])->first();
+            // Pasarela: un intento rechazado no se reutiliza, se abre otro. Manual: una solicitud por pedido.
+            $existing = DB::table('payments')->where('order_id', $o->id)->where('provider', $data['provider']);
+            $p = $data['provider'] === 'MANUAL' ? $existing->first() : $existing->where('status', 'PENDING')->first();
             if (! $p) {
                 $id = (string) Str::uuid();
-                DB::table('payments')->insert(['id' => $id, 'order_id' => $o->id, 'customer_id' => $o->customer_id, 'provider' => 'MANUAL', 'status' => 'PENDING', 'amount' => $o->total, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('payments')->insert(['id' => $id, 'order_id' => $o->id, 'customer_id' => $o->customer_id, 'provider' => $data['provider'], 'status' => 'PENDING',
+                    'attempt' => (int) DB::table('payments')->where('order_id', $o->id)->where('provider', $data['provider'])->max('attempt') + 1, 'amount' => $o->total, 'created_at' => now(), 'updated_at' => now()]);
                 $p = DB::table('payments')->where('id', $id)->first();
                 $this->orders->record($o->id, $r->user()->id, 'PAYMENT_REQUESTED', null, null, $id);
             }
@@ -40,6 +44,12 @@ class PaymentController
         abort_unless($p->customer_id === $r->user()->id || in_array('payments:confirm', $r->user()->permissions(), true), 403, 'Pago ajeno');
 
         return Api::ok('Pago', self::view($p));
+    }
+
+    /** Medios de pago que el checkout puede ofrecer. */
+    public function methods()
+    {
+        return Api::ok('Medios de pago', ['manual' => true, 'gateways' => array_values(array_filter(GatewayPayments::PROVIDERS, fn ($p) => GatewayPayments::enabled($p)))]);
     }
 
     public function confirm(Request $r, string $id)
@@ -67,7 +77,8 @@ class PaymentController
     {
         $instructions = trim((string) config('commerce.payments.manual_instructions'));
 
-        return ['id' => $p->id, 'orderId' => $p->order_id, 'customerId' => $p->customer_id, 'provider' => $p->provider, 'status' => $p->status, 'amount' => bcadd((string) $p->amount, '0', 2), 'externalReference' => $p->external_reference, 'paymentUrl' => $p->payment_url,
+        return ['id' => $p->id, 'orderId' => $p->order_id, 'customerId' => $p->customer_id, 'provider' => $p->provider, 'status' => $p->status, 'amount' => bcadd((string) $p->amount, '0', 2), 'externalReference' => $p->external_reference,
+            'paymentUrl' => $p->status === 'PENDING' && in_array($p->provider, GatewayPayments::PROVIDERS, true) ? GatewayPayments::checkoutUrl($p) : $p->payment_url,
             'instructions' => $p->provider === 'MANUAL' && $p->status === 'PENDING' && $instructions !== '' ? $instructions : null,
             'confirmedAt' => OrderService::iso($p->confirmed_at ?? null), 'createdAt' => OrderService::iso($p->created_at ?? null)];
     }

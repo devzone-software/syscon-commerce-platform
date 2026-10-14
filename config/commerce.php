@@ -16,7 +16,9 @@ return [
     // Texto que ve el cliente en su solicitud de pago manual (cuentas, CCI, a quién avisar).
     // Web de la tienda: los correos enlazan al detalle del pedido ({web_url}/pedido/{id}).
     'web_url' => env('WEB_URL', ''),
-    'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', ''))],
+    'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', '')),
+        // Pasarela simulada para pruebas: nunca activarla en producción.
+        'sandbox' => ['enabled' => (bool) env('PAYMENT_SANDBOX', false), 'secret' => (string) env('PAYMENT_SANDBOX_SECRET', '')]],
     // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.
     // Consulta de RUC: fake (datos de prueba) o none; el proveedor real se agrega como driver.
     'ruc_lookup' => ['driver' => env('RUC_LOOKUP_DRIVER', 'none')],

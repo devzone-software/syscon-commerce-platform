@@ -81,7 +81,7 @@ class AdminOrderController
     /** Bandeja de pagos: por defecto los pendientes de verificar, los más antiguos primero. */
     public function payments(Request $r)
     {
-        $data = $r->validate(['status' => 'nullable|in:PENDING,APPROVED,CANCELLED', 'q' => 'nullable|string|max:120', 'page' => 'nullable|integer|min:1', 'perPage' => 'nullable|integer|min:1|max:100']);
+        $data = $r->validate(['status' => 'nullable|in:PENDING,APPROVED,CANCELLED,REJECTED,REFUND_REQUIRED', 'q' => 'nullable|string|max:120', 'page' => 'nullable|integer|min:1', 'perPage' => 'nullable|integer|min:1|max:100']);
         $status = $data['status'] ?? 'PENDING';
         $base = DB::table('payments')->join('orders', 'orders.id', '=', 'payments.order_id')->join('users', 'users.id', '=', 'payments.customer_id')
             ->where('payments.status', $status);

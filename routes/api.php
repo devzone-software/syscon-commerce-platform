@@ -9,6 +9,7 @@ use App\Modules\Orders\CashController;
 use App\Modules\Orders\OrderController;
 use App\Modules\Orders\SaleController;
 use App\Modules\Payments\PaymentController;
+use App\Modules\Payments\SandboxController;
 use App\Modules\Reports\ReportController;
 use App\Modules\Suppliers\SupplierController;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,9 @@ Route::prefix('catalog')->controller(CatalogController::class)->group(function (
     Route::post('internal/products', 'store')->middleware('internal');
 });
 Route::get('orders/delivery-options', [OrderController::class, 'deliveryOptions']);
+Route::get('payments/methods', [PaymentController::class, 'methods']);
+// Notificación de la pasarela: se autentica con la firma HMAC del cuerpo, no con JWT.
+Route::post('payments/webhooks/sandbox', [SandboxController::class, 'webhook'])->middleware('throttle:120,1');
 Route::get('orders/internal/{id}', [OrderController::class, 'internalShow'])->middleware('internal')->whereUuid('id');
 Route::post('orders/internal/{id}/paid', [OrderController::class, 'paid'])->middleware('internal')->whereUuid('id');
 Route::middleware('jwt')->group(function () {

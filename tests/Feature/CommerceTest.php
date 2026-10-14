@@ -1113,4 +1113,76 @@ class CommerceTest extends TestCase
         config(['commerce.ruc_lookup.driver' => 'fake']);
         $this->assertNull($this->order($customer, $this->product(5, 'SKU-4'))['billing']['verification']);
     }
+
+    private function sandboxEvent(array $payment, string $status, array $override = []): array
+    {
+        $body = json_encode($override + ['paymentId' => $payment['id'], 'orderId' => $payment['orderId'], 'amount' => $payment['amount'], 'currency' => 'PEN', 'status' => $status, 'transactionId' => 'SBX-'.Str::random(6)]);
+
+        return [$body, ['X-Signature' => hash_hmac('sha256', $body, 'sandbox-secret'), 'Content-Type' => 'application/json', 'Accept' => 'application/json']];
+    }
+
+    private function postSandbox(array $event)
+    {
+        return $this->call('POST', '/api/payments/webhooks/sandbox', [], [], [], $this->transformHeadersToServerVars($event[1]), $event[0]);
+    }
+
+    public function test_sandbox_gateway_confirms_payments_through_signed_webhooks(): void
+    {
+        $customer = $this->token();
+        $product = $this->product();
+        $order = $this->order($customer, $product);
+        $this->getJson('/api/payments/methods')->assertOk()->assertJsonPath('data.gateways', []);
+        $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->assertUnprocessable();
+        config(['commerce.payments.sandbox' => ['enabled' => true, 'secret' => 'sandbox-secret'], 'commerce.web_url' => 'https://tienda.test']);
+        $this->getJson('/api/payments/methods')->assertOk()->assertJsonPath('data.gateways', ['SANDBOX']);
+
+        $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->assertOk()
+            ->assertJsonPath('data.provider', 'SANDBOX')->assertJsonPath('data.status', 'PENDING')->json('data');
+        $this->assertStringContainsString('/sandbox/checkout/'.$payment['id'].'?sig=', $payment['paymentUrl']);
+        // Reintentar abre el mismo intento pendiente.
+        $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->assertJsonPath('data.id', $payment['id']);
+        $path = parse_url($payment['paymentUrl'], PHP_URL_PATH).'?'.parse_url($payment['paymentUrl'], PHP_URL_QUERY);
+        $this->get($path)->assertOk()->assertSee('PASARELA DE PRUEBA')->assertSee('S/ 20.30');
+        $this->get('/sandbox/checkout/'.$payment['id'].'?sig=falsa')->assertForbidden();
+
+        // Firma, importe y pedido se validan antes de tocar nada.
+        [$body] = $this->sandboxEvent($payment, 'approved');
+        $this->call('POST', '/api/payments/webhooks/sandbox', [], [], [], $this->transformHeadersToServerVars(['X-Signature' => 'mala', 'Content-Type' => 'application/json', 'Accept' => 'application/json']), $body)->assertUnauthorized();
+        $this->postSandbox($this->sandboxEvent($payment, 'approved', ['amount' => '1.00']))->assertUnprocessable();
+        $this->postSandbox($this->sandboxEvent($payment, 'approved', ['orderId' => (string) Str::uuid()]))->assertUnprocessable();
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAYMENT_PENDING']);
+
+        // Rechazado: el pedido sigue pendiente y un nuevo intento crea otro pago.
+        $this->postSandbox($this->sandboxEvent($payment, 'rejected'))->assertOk()->assertJsonPath('data.status', 'REJECTED');
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAYMENT_PENDING']);
+        $retry = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->assertOk()->json('data');
+        $this->assertNotSame($payment['id'], $retry['id']);
+
+        // La decisión simulada pasa por el mismo webhook firmado y vuelve a la tienda.
+        $retryPath = parse_url($retry['paymentUrl'], PHP_URL_PATH);
+        $sig = parse_url($retry['paymentUrl'], PHP_URL_QUERY);
+        $this->get($retryPath.'/approve?'.$sig)->assertRedirect('https://tienda.test/pedido/'.$order['id'].'?pago=retorno');
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAID']);
+        $this->assertDatabaseHas('payments', ['id' => $retry['id'], 'status' => 'APPROVED']);
+        $this->assertDatabaseHas('products', ['id' => $product['id'], 'stock' => 3, 'reserved' => 0]);
+        // Un webhook repetido no vuelve a cobrar ni descontar.
+        $this->postSandbox($this->sandboxEvent($retry, 'approved'))->assertOk()->assertJsonPath('data.status', 'APPROVED');
+        $this->assertDatabaseHas('products', ['id' => $product['id'], 'stock' => 3, 'reserved' => 0]);
+        $this->assertSame(1, DB::table('order_events')->where('order_id', $order['id'])->where('type', 'PAYMENT_CONFIRMED')->count());
+    }
+
+    public function test_gateway_approval_after_cancellation_requires_a_refund(): void
+    {
+        config(['commerce.payments.sandbox' => ['enabled' => true, 'secret' => 'sandbox-secret']]);
+        $customer = $this->token();
+        $order = $this->order($customer, $this->product());
+        $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->json('data');
+        // El pedido vence mientras el cliente pagaba; la pasarela aprueba después.
+        app(OrderService::class)->transition($order['id'], 'EXPIRED');
+        DB::table('payments')->where('id', $payment['id'])->update(['status' => 'PENDING']);
+        $this->postSandbox($this->sandboxEvent($payment, 'approved'))->assertOk()->assertJsonPath('data.status', 'REFUND_REQUIRED');
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'EXPIRED']);
+        $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'PAYMENT_REFUND_REQUIRED']);
+        $this->getJson('/api/admin/payments?status=REFUND_REQUIRED', $this->token('ADMIN'))->assertOk()->assertJsonPath('data.total', 1);
+    }
 }
