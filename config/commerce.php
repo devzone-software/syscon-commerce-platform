@@ -19,7 +19,7 @@ return [
     'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', '')),
         // Pasarela simulada para pruebas: nunca activarla en producción.
         'sandbox' => ['enabled' => (bool) env('PAYMENT_SANDBOX', false), 'secret' => (string) env('PAYMENT_SANDBOX_SECRET', '')],
-        // Mercado Pago Checkout Pro: se habilita con el access token (TEST-… para pruebas, APP_USR-… en producción).
+        // Mercado Pago Checkout Pro: se habilita con el Access Token de producción (APP_USR-…); para pruebas, el de una cuenta vendedora de prueba.
         'mercadopago' => ['access_token' => (string) env('MERCADOPAGO_ACCESS_TOKEN', ''), 'webhook_secret' => (string) env('MERCADOPAGO_WEBHOOK_SECRET', ''),
             'api_url' => env('MERCADOPAGO_API_URL', 'https://api.mercadopago.com')]],
     // Los precios del catálogo y el envío incluyen IGV; esta tasa separa base e impuesto de cada venta.

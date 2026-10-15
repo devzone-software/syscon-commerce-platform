@@ -64,7 +64,7 @@ Comprueba la recuperación al menos una vez en una base de prueba: restaura una 
 
 ## Pasos de prueba de extremo a extremo
 
-1. **Web.** Compra con boleta (DNI) y otra con factura ("Consultar RUC" en modo prueba). Paga con pago manual, con la pasarela de prueba o con Mercado Pago (credenciales de prueba y tarjetas de prueba de Mercado Pago).
+1. **Web.** Compra con boleta (DNI) y otra con factura ("Consultar RUC" en modo prueba). Paga con pago manual, con la pasarela de prueba o con Mercado Pago (Access Token de una cuenta vendedora de prueba, comprador de prueba y tarjetas de prueba de Mercado Pago).
 2. **Backoffice:**
    - confirma el pago;
    - emite el comprobante;
