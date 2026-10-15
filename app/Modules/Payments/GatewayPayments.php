@@ -13,18 +13,21 @@ use Illuminate\Support\Facades\DB;
  * - approved con el pedido pendiente: pago APPROVED y pedido PAID.
  * - approved con el pedido ya cancelado o vencido: pago REFUND_REQUIRED (hay que devolver el dinero).
  * - rejected: pago REJECTED; el pedido sigue pendiente y el cliente puede intentar de nuevo.
- * Hoy la única pasarela es SANDBOX (simulada, para pruebas); una real se agrega con su propio
- * secreto y su página de pago, sin cambiar este procesamiento.
+ * Pasarelas: SANDBOX (simulada, para pruebas) y MERCADOPAGO (Checkout Pro, ver MercadoPago).
  */
 class GatewayPayments
 {
-    public const PROVIDERS = ['SANDBOX'];
+    public const PROVIDERS = ['SANDBOX', MercadoPago::PROVIDER];
 
     public function __construct(private OrderService $orders) {}
 
     public static function enabled(string $provider): bool
     {
-        return $provider === 'SANDBOX' && (bool) config('commerce.payments.sandbox.enabled') && self::secret($provider) !== '';
+        return match ($provider) {
+            'SANDBOX' => (bool) config('commerce.payments.sandbox.enabled') && self::secret($provider) !== '',
+            MercadoPago::PROVIDER => MercadoPago::enabled(),
+            default => false,
+        };
     }
 
     public static function secret(string $provider): string
@@ -58,9 +61,19 @@ class GatewayPayments
             $p = DB::table('payments')->where('id', $event['paymentId'])->lockForUpdate()->first();
             abort_unless($p->provider === $provider && $order->id === $event['orderId'], 422, 'El pago no corresponde al pedido');
             abort_unless($event['currency'] === 'PEN' && bccomp(bcadd($event['amount'], '0', 2), (string) $p->amount, 2) === 0, 422, 'Importe o moneda distintos al pago');
-            // Reintento de la pasarela: el resultado ya se aplicó.
             if ($p->status !== 'PENDING') {
-                return $p;
+                $approved = $event['status'] === 'approved';
+                // Otro cobro aprobado para el mismo pago (p. ej. dos pestañas): se registra para devolverlo.
+                if ($approved && in_array($p->status, ['APPROVED', 'REFUND_REQUIRED'], true) && $p->external_reference !== $event['transactionId']
+                    && ! DB::table('order_events')->where('order_id', $order->id)->where('type', 'PAYMENT_DUPLICATE_REFUND_REQUIRED')->where('reference', $event['transactionId'])->exists()) {
+                    $this->orders->record($order->id, null, 'PAYMENT_DUPLICATE_REFUND_REQUIRED', null, null, $event['transactionId']);
+                }
+                // Reintento de la pasarela: el resultado ya se aplicó. Solo sigue un cobro aprobado sobre un
+                // pago que se canceló (el pedido venció mientras el cliente pagaba) o rechazó: ese dinero
+                // se cobró y no puede perderse de vista.
+                if (! $approved || ! in_array($p->status, ['CANCELLED', 'REJECTED'], true)) {
+                    return $p;
+                }
             }
             if ($event['status'] === 'rejected') {
                 DB::table('payments')->where('id', $p->id)->update(['status' => 'REJECTED', 'external_reference' => $event['transactionId'], 'updated_at' => now()]);

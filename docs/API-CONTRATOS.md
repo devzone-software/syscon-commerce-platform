@@ -69,12 +69,13 @@ Los precios incluyen IGV. En cada línea, la base es el importe entre (1 + tasa)
 
 | Método y ruta | Acceso | Notas |
 | --- | --- | --- |
-| `POST /payments` | Dueño del pedido | `{ orderId, provider: "MANUAL" }`; si ya existe una solicitud, la devuelve. |
+| `POST /payments` | Dueño del pedido | `{ orderId, provider }` con `MANUAL`, `SANDBOX` o `MERCADOPAGO` (las pasarelas solo si están habilitadas en `GET /payments/methods`). Manual: si ya existe una solicitud, la devuelve. Pasarela: reutiliza el intento pendiente y devuelve `paymentUrl`; si Mercado Pago no responde, 502. |
 | `GET /payments/{id}` | Dueño o `payments:confirm` | Incluye `instructions` mientras está `PENDING`. |
 | `POST /payments/{id}/confirm` | `payments:confirm` | `{ reference }`. En una transacción: el pago pasa a `APPROVED` y el pedido a `PAID`. Es idempotente. |
-| `GET /admin/payments` | `payments:confirm` | `?status=PENDING\|APPROVED\|CANCELLED&q&page&perPage`. |
+| `GET /admin/payments` | `payments:confirm` | `?status=PENDING\|APPROVED\|CANCELLED\|REJECTED\|REFUND_REQUIRED&q&page&perPage`. |
+| `POST /payments/webhooks/mercadopago` | Firma `x-signature` | Notificación de Mercado Pago; el pago se consulta en su API antes de aplicarlo. Responde 503 si Mercado Pago no responde (para que reintente). |
 
-Estados del pago: `PENDING`, `APPROVED` o `CANCELLED` (se cancela al cancelarse o vencer el pedido).
+Estados del pago: `PENDING`, `APPROVED`, `CANCELLED` (se cancela al cancelarse o vencer el pedido), `REJECTED` (pasarela) o `REFUND_REQUIRED` (la pasarela cobró un pedido ya cancelado o vencido: hay que devolver el dinero).
 
 ## Comprobantes
 

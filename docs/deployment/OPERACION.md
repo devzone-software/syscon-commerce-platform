@@ -15,6 +15,7 @@ Complementa la [guía de Hostinger](HOSTINGER.md). Revisado el 14 de octubre de 
 | `MAIL_*`, `WEB_URL` | Correos al cliente y enlace a "Mi pedido". | SMTP del dominio. |
 | `RUC_LOOKUP_DRIVER`, `RUC_LOOKUP_TOKEN` | Consulta de RUC: `migo` (proveedor real), `fake` (datos de prueba) o `none`. Con `migo` sin token queda desactivada. | `migo` con el token de api.migo.pe/tokens; nunca `fake`. |
 | `PAYMENT_SANDBOX`, `PAYMENT_SANDBOX_SECRET` | Pasarela simulada. | `false`: nunca habilitarla. |
+| `MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_WEBHOOK_SECRET` | Mercado Pago Checkout Pro. Sin token no se ofrece. Webhook: `{APP_URL}/api/payments/webhooks/mercadopago` (evento "Pagos"). | Credenciales de producción `APP_USR-…` y la clave secreta de Webhooks; `APP_URL` con HTTPS. |
 | `ORDER_RESERVATION_HOURS`, `MANUAL_PAYMENT_INSTRUCTIONS`, `DELIVERY_FEE`, `PICKUP_*` | Reserva de stock, instrucciones de pago manual y entrega. | Según la operación. |
 
 Para el entorno de prueba, `php artisan sunat:test-certificate` genera un certificado autofirmado e imprime las variables del servicio beta (RUC 20000000001, usuario MODDATOS).
@@ -63,7 +64,7 @@ Comprueba la recuperación al menos una vez en una base de prueba: restaura una 
 
 ## Pasos de prueba de extremo a extremo
 
-1. **Web.** Compra con boleta (DNI) y otra con factura ("Consultar RUC" en modo prueba). Paga con pago manual o con la pasarela de prueba.
+1. **Web.** Compra con boleta (DNI) y otra con factura ("Consultar RUC" en modo prueba). Paga con pago manual, con la pasarela de prueba o con Mercado Pago (credenciales de prueba y tarjetas de prueba de Mercado Pago).
 2. **Backoffice:**
    - confirma el pago;
    - emite el comprobante;

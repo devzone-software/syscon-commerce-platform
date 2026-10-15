@@ -1216,13 +1216,132 @@ class CommerceTest extends TestCase
         $customer = $this->token();
         $order = $this->order($customer, $this->product());
         $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'SANDBOX'], $customer)->json('data');
-        // El pedido vence mientras el cliente pagaba; la pasarela aprueba después.
+        // El pedido vence mientras el cliente pagaba (su pago pendiente se cancela); la pasarela aprueba después.
         app(OrderService::class)->transition($order['id'], 'EXPIRED');
-        DB::table('payments')->where('id', $payment['id'])->update(['status' => 'PENDING']);
+        $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'CANCELLED']);
         $this->postSandbox($this->sandboxEvent($payment, 'approved'))->assertOk()->assertJsonPath('data.status', 'REFUND_REQUIRED');
         $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'EXPIRED']);
         $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'PAYMENT_REFUND_REQUIRED']);
         $this->getJson('/api/admin/payments?status=REFUND_REQUIRED', $this->token('ADMIN'))->assertOk()->assertJsonPath('data.total', 1);
+    }
+
+    /**
+     * Mercado Pago simulado con Http::fake: preferencias en /checkout/preferences y pagos en
+     * /v1/payments/{id}, cuyos datos se arman con $payments[id] (external_reference se completa después).
+     */
+    private function fakeMercadoPago(array &$payments, int &$preferences, bool $preferenceFails = false): void
+    {
+        config(['commerce.payments.mercadopago' => ['access_token' => 'TEST-token', 'webhook_secret' => 'mp-secret', 'api_url' => 'https://api.mercadopago.com'],
+            'commerce.web_url' => 'https://tienda.test', 'app.url' => 'http://127.0.0.1:8000']);
+        Http::fake(function ($request) use (&$payments, &$preferences, &$preferenceFails) {
+            if (str_ends_with($request->url(), '/checkout/preferences')) {
+                if ($preferenceFails) {
+                    $preferenceFails = false;
+
+                    return Http::response(['message' => 'internal_error'], 500);
+                }
+                $preferences++;
+
+                return Http::response(['id' => 'pref-'.$preferences, 'init_point' => 'https://www.mercadopago.com.pe/checkout/v1/redirect?pref_id=pref-'.$preferences], 201);
+            }
+            $id = basename(parse_url($request->url(), PHP_URL_PATH));
+
+            return isset($payments[$id]) ? Http::response(['id' => (int) $id, 'currency_id' => 'PEN'] + $payments[$id]) : Http::response(['message' => 'not_found'], 404);
+        });
+    }
+
+    /** Notificación firmada como Mercado Pago: HMAC-SHA256 de "id:…;request-id:…;ts:…;". */
+    private function mercadoPagoWebhook(string $dataId, ?string $secret = 'mp-secret')
+    {
+        $ts = (string) now()->getTimestamp();
+        $signature = hash_hmac('sha256', 'id:'.$dataId.';request-id:req-1;ts:'.$ts.';', (string) $secret);
+
+        return $this->call('POST', '/api/payments/webhooks/mercadopago?type=payment&data.id='.$dataId, [], [], [],
+            $this->transformHeadersToServerVars(['x-signature' => 'ts='.$ts.',v1='.$signature, 'x-request-id' => 'req-1', 'Content-Type' => 'application/json', 'Accept' => 'application/json']),
+            json_encode(['type' => 'payment', 'action' => 'payment.updated', 'data' => ['id' => $dataId]]));
+    }
+
+    public function test_mercadopago_confirms_a_payment_only_after_querying_its_api(): void
+    {
+        $payments = [];
+        $preferences = 0;
+        $customer = $this->token();
+        // Sin access token Mercado Pago no se ofrece.
+        $order = $this->order($customer, $this->product());
+        $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MERCADOPAGO'], $customer)->assertUnprocessable();
+        $this->fakeMercadoPago($payments, $preferences);
+        $this->getJson('/api/payments/methods')->assertOk()->assertJsonPath('data.gateways', ['MERCADOPAGO']);
+
+        $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MERCADOPAGO'], $customer)->assertOk()
+            ->assertJsonPath('data.paymentUrl', 'https://www.mercadopago.com.pe/checkout/v1/redirect?pref_id=pref-1')->json('data');
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/checkout/preferences') && $request->hasHeader('Authorization', 'Bearer TEST-token')
+            && $request['external_reference'] === $payment['id'] && $request['items'][0]['unit_price'] === 20.3 && $request['items'][0]['currency_id'] === 'PEN'
+            && $request['binary_mode'] === true && $request['expires'] === true && isset($request['expiration_date_to'])
+            // En local (http) no se pide notificación ni retorno automático: Mercado Pago solo los acepta con HTTPS.
+            && ! isset($request['notification_url']) && ! isset($request['auto_return'])
+            && $request['back_urls']['success'] === 'http://127.0.0.1:8000/payments/mercadopago/return');
+        // Volver a pagar reutiliza la misma preferencia.
+        $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MERCADOPAGO'], $customer)->assertOk()->assertJsonPath('data.id', $payment['id']);
+        $this->assertSame(1, $preferences);
+
+        // El retorno trae status=approved, pero vale lo que responda la API: aquí el pago sigue en proceso.
+        $payments['111'] = ['status' => 'in_process', 'transaction_amount' => 20.3, 'external_reference' => $payment['id']];
+        $this->get('/payments/mercadopago/return?payment_id=111&status=approved&external_reference='.$payment['id'])
+            ->assertRedirect('https://tienda.test/pedido/'.$order['id'].'?pago=retorno');
+        $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'PENDING']);
+
+        $payments['111']['status'] = 'approved';
+        $this->get('/payments/mercadopago/return?payment_id=111&external_reference='.$payment['id'])->assertRedirect();
+        $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'APPROVED', 'external_reference' => 'MP-111']);
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAID']);
+
+        // El webhook del mismo pago llega después: firmado, no repite el cobro ni el stock.
+        $this->mercadoPagoWebhook('111', 'otra-clave')->assertUnauthorized();
+        $this->mercadoPagoWebhook('111')->assertOk();
+        $this->assertSame(1, DB::table('order_events')->where('order_id', $order['id'])->where('type', 'PAYMENT_CONFIRMED')->count());
+        $this->assertDatabaseHas('products', ['sku' => 'SKU-1', 'stock' => 3, 'reserved' => 0]);
+        // Un segundo cobro aprobado para el mismo pago queda registrado para devolverlo (una sola vez).
+        $payments['222'] = ['status' => 'approved', 'transaction_amount' => 20.3, 'external_reference' => $payment['id']];
+        $this->mercadoPagoWebhook('222')->assertOk();
+        $this->mercadoPagoWebhook('222')->assertOk();
+        $this->assertSame(1, DB::table('order_events')->where('order_id', $order['id'])->where('type', 'PAYMENT_DUPLICATE_REFUND_REQUIRED')->where('reference', 'MP-222')->count());
+    }
+
+    public function test_mercadopago_failures_never_confirm_the_order(): void
+    {
+        $payments = [];
+        $preferences = 0;
+        $this->fakeMercadoPago($payments, $preferences, preferenceFails: true);
+        $customer = $this->token();
+        $order = $this->order($customer, $this->product());
+        // Mercado Pago no crea la preferencia: el pago queda pendiente sin enlace y el reintento la pide de nuevo.
+        $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MERCADOPAGO'], $customer)->assertStatus(502);
+        $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MERCADOPAGO'], $customer)->assertOk()
+            ->assertJsonPath('data.paymentUrl', 'https://www.mercadopago.com.pe/checkout/v1/redirect?pref_id=pref-1')->json('data');
+        $this->assertSame(1, DB::table('payments')->where('order_id', $order['id'])->count());
+
+        // Importe distinto o pago ajeno: no se aplica, y el webhook responde 200 para que no se reintente.
+        $payments['333'] = ['status' => 'approved', 'transaction_amount' => 1.0, 'external_reference' => $payment['id']];
+        $this->mercadoPagoWebhook('333')->assertOk()->assertJsonPath('message', 'Evento rechazado: Importe o moneda distintos al pago');
+        $this->get('/payments/mercadopago/return?payment_id=333&external_reference='.$payment['id'])->assertRedirect('https://tienda.test/pedido/'.$order['id'].'?pago=retorno');
+        $payments['444'] = ['status' => 'approved', 'transaction_amount' => 20.3, 'external_reference' => (string) Str::uuid()];
+        $this->mercadoPagoWebhook('444')->assertOk();
+        // Rechazado o inexistente: el cliente puede reintentar en el mismo checkout de Mercado Pago.
+        $payments['555'] = ['status' => 'rejected', 'transaction_amount' => 20.3, 'external_reference' => $payment['id']];
+        $this->mercadoPagoWebhook('555')->assertOk();
+        $this->mercadoPagoWebhook('999')->assertOk();
+        $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'PENDING']);
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAYMENT_PENDING']);
+
+        // El pedido vence (el pago se cancela) y Mercado Pago aprueba después: hay que devolver el dinero.
+        app(OrderService::class)->transition($order['id'], 'EXPIRED');
+        $payments['666'] = ['status' => 'approved', 'transaction_amount' => 20.3, 'external_reference' => $payment['id']];
+        $this->mercadoPagoWebhook('666')->assertOk();
+        $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'REFUND_REQUIRED', 'external_reference' => 'MP-666']);
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'EXPIRED']);
+        // Mercado Pago caído: 503 para que reintente la notificación.
+        Http::fake(fn () => throw new ConnectionException('timeout'));
+        $this->mercadoPagoWebhook('777')->assertStatus(503);
     }
 
     public function test_boleta_without_customer_document_only_below_700(): void

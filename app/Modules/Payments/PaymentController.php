@@ -6,18 +6,19 @@ use App\Modules\Orders\OrderService;
 use App\Support\Api;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class PaymentController
 {
-    public function __construct(private OrderService $orders) {}
+    public function __construct(private OrderService $orders, private MercadoPago $mercadoPago) {}
 
     public function store(Request $r)
     {
         $data = $r->validate(['orderId' => 'required|uuid', 'provider' => 'required|in:MANUAL,'.implode(',', GatewayPayments::PROVIDERS)]);
         abort_if($data['provider'] !== 'MANUAL' && ! GatewayPayments::enabled($data['provider']), 422, 'Medio de pago no disponible');
 
-        return DB::transaction(function () use ($r, $data) {
+        $p = DB::transaction(function () use ($r, $data) {
             $o = DB::table('orders')->where('id', $data['orderId'])->lockForUpdate()->first();
             abort_unless($o, 404, 'Pedido no encontrado');
             abort_unless($o->customer_id === $r->user()->id, 403, 'Pedido ajeno');
@@ -33,8 +34,22 @@ class PaymentController
                 $this->orders->record($o->id, $r->user()->id, 'PAYMENT_REQUESTED', null, null, $id);
             }
 
-            return Api::ok('Pago creado', self::view($p));
+            return $p;
         }, 3);
+        // La preferencia se crea fuera de la transacción para no bloquear el pedido mientras responde
+        // Mercado Pago; si falla, el pago queda pendiente sin enlace y el siguiente intento la vuelve a pedir.
+        if ($p->provider === MercadoPago::PROVIDER && $p->status === 'PENDING' && ! $p->payment_url) {
+            try {
+                $url = $this->mercadoPago->createPreference($p, DB::table('orders')->where('id', $p->order_id)->first());
+            } catch (PaymentGatewayUnavailable $e) {
+                Log::warning('No se pudo crear la preferencia de Mercado Pago', ['payment' => $p->id, 'error' => $e->getMessage()]);
+                abort(502, 'Mercado Pago no respondió; intenta de nuevo en unos minutos.');
+            }
+            DB::table('payments')->where('id', $p->id)->update(['payment_url' => $url, 'updated_at' => now()]);
+            $p = DB::table('payments')->where('id', $p->id)->first();
+        }
+
+        return Api::ok('Pago creado', self::view($p));
     }
 
     public function show(Request $r, string $id)
@@ -78,7 +93,11 @@ class PaymentController
         $instructions = trim((string) config('commerce.payments.manual_instructions'));
 
         return ['id' => $p->id, 'orderId' => $p->order_id, 'customerId' => $p->customer_id, 'provider' => $p->provider, 'status' => $p->status, 'amount' => bcadd((string) $p->amount, '0', 2), 'externalReference' => $p->external_reference,
-            'paymentUrl' => $p->status === 'PENDING' && in_array($p->provider, GatewayPayments::PROVIDERS, true) ? GatewayPayments::checkoutUrl($p) : $p->payment_url,
+            'paymentUrl' => match (true) {
+                $p->status !== 'PENDING' => null,
+                $p->provider === 'SANDBOX' => GatewayPayments::checkoutUrl($p),
+                default => $p->payment_url,
+            },
             'instructions' => $p->provider === 'MANUAL' && $p->status === 'PENDING' && $instructions !== '' ? $instructions : null,
             'confirmedAt' => OrderService::iso($p->confirmed_at ?? null), 'createdAt' => OrderService::iso($p->created_at ?? null)];
     }
