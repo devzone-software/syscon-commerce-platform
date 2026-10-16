@@ -23,3 +23,8 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# Compresión de las respuestas JSON de la API y de los PDF/XML en texto.
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain application/json application/xml text/xml
+</IfModule>

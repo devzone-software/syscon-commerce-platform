@@ -2,6 +2,8 @@
 
 Este despliegue usa PHP 8.4, MySQL/MariaDB con InnoDB y un cron. No requiere acceso root ni procesos permanentes. El paquete se prepara localmente; todavía hay que subirlo y configurar la cuenta real.
 
+Si la tienda (syscon-commerce-web) ocupa el dominio principal, crea en hPanel un subdominio como `api.tu-dominio.com` con su propia carpeta e instala allí la plataforma; en los ejemplos, sustituye `tu-dominio.com` por ese subdominio. La tienda tiene su propio paquete y guía (`docs/HOSTINGER.md` en syscon-commerce-web).
+
 ## 1. Preparar hPanel
 
 En **Configuración PHP**, selecciona PHP 8.4 para el dominio. Comprueba BCMath, cURL, DOM/XML, Fileinfo, Mbstring, OpenSSL, PDO MySQL y ZIP. Laravel y sus dependencias requieren estas extensiones tanto en la web como en CLI.

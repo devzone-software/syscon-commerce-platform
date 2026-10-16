@@ -19,7 +19,8 @@ try {
         if ($file->isLink()) {
             throw new RuntimeException('El paquete no admite enlaces simbólicos');
         }
-        $relative = substr($file->getPathname(), strlen($source) + 1);
+        // El ZIP usa '/' aunque se arme en Windows.
+        $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($source) + 1));
         if ($file->isDir()) {
             $zip->addEmptyDir($relative);
         } else {
