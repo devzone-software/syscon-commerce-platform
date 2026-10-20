@@ -64,7 +64,7 @@ class CommerceTest extends TestCase
     private function paidOrder(): array
     {
         $customer = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $order = $this->order($customer, $this->product());
         $payment = $this->postJson('/api/payments', ['orderId' => $order['id'], 'provider' => 'MANUAL'], $customer)->assertOk()->json('data');
         $this->postJson('/api/payments/'.$payment['id'].'/confirm', ['reference' => 'BANK-001'], $admin)->assertOk();
@@ -129,7 +129,7 @@ class CommerceTest extends TestCase
 
     public function test_catalog_upsert_and_internal_access(): void
     {
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $data = ['sku' => 'SKU', 'name' => 'Laptop', 'price' => '123.45', 'stock' => 7, 'active' => true, 'category' => 'Laptops', 'brand' => 'Brand'];
         $p = $this->postJson('/api/catalog/products', $data, $admin)->assertOk()->json('data');
         $data['stock'] = 3;
@@ -148,7 +148,7 @@ class CommerceTest extends TestCase
         $o = $this->order($h, $p);
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 0);
         $this->postJson('/api/orders', ['items' => [['productId' => $p['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP], $this->token())->assertConflict();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertOk();
         $this->getJson('/api/catalog/products/'.$p['id'])->assertOk()->assertJsonPath('data.stock', 2);
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertConflict();
@@ -169,7 +169,7 @@ class CommerceTest extends TestCase
     {
         $h = $this->token();
         $other = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $p = $this->product();
         $o = $this->order($h, $p, 3);
         $this->assertSame('30.45', $o['total']);
@@ -193,7 +193,7 @@ class CommerceTest extends TestCase
     public function test_payment_confirmation_of_cancelled_order_rolls_back(): void
     {
         $h = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $o = $this->order($h, $this->product());
         $pay = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()->json('data');
         $this->patchJson('/api/orders/'.$o['id'].'/status/CANCELLED', [], $admin)->assertOk();
@@ -205,7 +205,7 @@ class CommerceTest extends TestCase
     public function test_unpaid_orders_expire_once_and_release_stock(): void
     {
         $h = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $p = $this->product();
         $o = $this->order($h, $p, 3);
         $this->assertNotNull($o['expiresAt']);
@@ -245,7 +245,7 @@ class CommerceTest extends TestCase
         $o = $this->order($h, $this->product());
         $pay = $this->postJson('/api/payments', ['orderId' => $o['id'], 'provider' => 'MANUAL'], $h)->assertOk()
             ->assertJsonPath('data.instructions', "BCP 123-456\nAvisar al 987654321")->json('data');
-        $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'OP-77'], $this->token('ADMIN'))->assertOk()
+        $this->postJson('/api/payments/'.$pay['id'].'/confirm', ['reference' => 'OP-77'], $this->token('SUPERADMIN'))->assertOk()
             ->assertJsonPath('data.instructions', null)->assertJsonPath('data.status', 'APPROVED');
         $this->assertNotNull(DB::table('payments')->where('id', $pay['id'])->value('confirmed_at'));
     }
@@ -254,7 +254,7 @@ class CommerceTest extends TestCase
     {
         $h = $this->token();
         $other = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $p = $this->product(10);
         $first = $this->order($h, $p, 1);
         $second = $this->order($other, $p, 1, ['type' => '01', 'documentType' => '6', 'documentNumber' => self::RUC, 'name' => 'Empresa Andina SAC', 'address' => 'Av. Lima 123']);
@@ -301,14 +301,14 @@ class CommerceTest extends TestCase
     {
         $p = $this->product();
         $this->order($this->token(), $p, 3);
-        $this->postJson('/api/catalog/products', ['sku' => $p['sku'], 'name' => 'Edited', 'price' => '10.15', 'stock' => 2, 'active' => true], $this->token('ADMIN'))->assertConflict();
+        $this->postJson('/api/catalog/products', ['sku' => $p['sku'], 'name' => 'Edited', 'price' => '10.15', 'stock' => 2, 'active' => true], $this->token('SUPERADMIN'))->assertConflict();
         $this->assertDatabaseHas('products', ['id' => $p['id'], 'stock' => 5, 'reserved' => 3]);
     }
 
     public function test_supplier_csv_import_quoted_fields_history_and_rate_limit(): void
     {
         config(['commerce.supplier_hosts' => ['feeds.example.com']]);
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $this->postJson('/api/suppliers', ['name' => 'Bad', 'feedUrl' => 'https://private.example.com/data.csv', 'minIntervalMinutes' => 15], $admin)->assertUnprocessable();
         $s = $this->postJson('/api/suppliers', ['name' => 'Feed', 'feedUrl' => 'https://feeds.example.com/data.csv', 'minIntervalMinutes' => 15], $admin)->assertOk()->json('data');
         Http::fake(['feeds.example.com/*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nCSV-1;\"Producto; especial\";5.25;10;;Brand;Category\n", 200)]);
@@ -321,7 +321,7 @@ class CommerceTest extends TestCase
     public function test_invalid_supplier_feed_does_not_partially_import(): void
     {
         config(['commerce.supplier_hosts' => ['feeds.example.com']]);
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $s = $this->postJson('/api/suppliers', ['name' => 'Feed', 'feedUrl' => 'https://feeds.example.com/data.csv', 'minIntervalMinutes' => 15], $admin)->assertOk()->json('data');
         Http::fake(['*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nGOOD;Good;2.00;3;;;\nBAD;Bad;-1;1;;;\n", 200)]);
         $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertOk()->assertJsonPath('data.status', 'FAILED');
@@ -413,7 +413,7 @@ class CommerceTest extends TestCase
     {
         config(['commerce.delivery.fee' => '12.50']);
         $h = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $o = $this->order($h, $this->product(), 1, self::BILLING, ['method' => 'DELIVERY', 'address' => 'Jr. Las Flores 245', 'district' => 'Miraflores'] + self::PICKUP);
         app(OrderService::class)->transition($o['id'], 'PAID');
         $invoice = $this->postJson('/api/invoices', ['orderId' => $o['id'], 'type' => '03'], $admin)->assertOk()->json('data');
@@ -438,7 +438,7 @@ class CommerceTest extends TestCase
         $this->assertSame(['lineTotal' => '30.45', 'taxableAmount' => '25.81', 'taxAmount' => '4.64'], array_intersect_key($order['details'][0], array_flip(['lineTotal', 'taxableAmount', 'taxAmount'])));
         $this->assertSame('30.45', $order['total']);
 
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         app(OrderService::class)->transition($order['id'], 'PAID');
         $invoice = $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->json('data');
         $doc = new \DOMDocument;
@@ -512,7 +512,7 @@ class CommerceTest extends TestCase
     public function test_partial_credit_and_debit_notes_respect_invoiced_amounts(): void
     {
         $customer = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $product = $this->product();
         $order = $this->order($customer, $product, 3);
         app(OrderService::class)->transition($order['id'], 'PAID');
@@ -571,7 +571,7 @@ class CommerceTest extends TestCase
     public function test_invoice_paid_order_requirement_unique_serial_xml_and_missing_credentials(): void
     {
         $h = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $o = $this->order($h, $this->product());
         $this->postJson('/api/invoices', $this->invoiceInput($o['id']), $h)->assertForbidden();
         $this->postJson('/api/invoices', $this->invoiceInput($o['id']), $admin)->assertConflict();
@@ -617,7 +617,7 @@ class CommerceTest extends TestCase
 
     public function test_invoice_numbers_are_sequential_per_series_and_configurable(): void
     {
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $serials = [];
         foreach (range(1, 3) as $n) {
             [$order] = $this->paidOrder();
@@ -729,7 +729,7 @@ class CommerceTest extends TestCase
         config(['commerce.web_url' => 'https://tienda.test', 'commerce.payments.manual_instructions' => 'Yape 999 888 777']);
         $user = User::create(['email' => 'ana@example.com', 'password' => 'customer-password-123', 'role' => 'CUSTOMER']);
         $customer = ['Authorization' => 'Bearer '.$this->postJson('/api/auth/login', ['email' => 'ana@example.com', 'password' => 'customer-password-123'])->json('data.accessToken')];
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $body = ['items' => [['productId' => $this->product()['id'], 'quantity' => 1]], 'billing' => self::BILLING, 'delivery' => self::PICKUP, 'idempotencyKey' => (string) Str::uuid()];
         $order = $this->postJson('/api/orders', $body, $customer)->assertOk()->json('data');
         // Un reintento de la misma compra no envía otro correo.
@@ -784,7 +784,7 @@ class CommerceTest extends TestCase
 
         // El reenvío manual funciona cuando el correo vuelve y no toca el pedido.
         Mail::swap(new MailFake(new MailManager(app())));
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $this->postJson('/api/admin/notifications/'.$n->id.'/resend', [], $customer)->assertForbidden();
         $this->postJson('/api/admin/notifications/'.$n->id.'/resend', [], $admin)->assertOk()->assertJsonPath('data.status', 'SENT');
         Mail::assertSent(OrderMail::class, 1);
@@ -797,7 +797,7 @@ class CommerceTest extends TestCase
     public function test_customers_download_only_accepted_documents_of_their_orders(): void
     {
         $customer = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $order = $this->order($customer, $this->product());
         app(OrderService::class)->transition($order['id'], 'PAID');
         $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->json('data');
@@ -885,7 +885,7 @@ class CommerceTest extends TestCase
     public function test_direct_sale_charges_delivers_and_consumes_stock_in_one_step(): void
     {
         Mail::fake();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $product = $this->product(5);
         $sale = ['items' => [['productId' => $product['id'], 'quantity' => 2]], 'billing' => self::BILLING, 'payment' => ['method' => 'CASH'], 'idempotencyKey' => (string) Str::uuid()];
         $this->postJson('/api/admin/sales', $sale, $this->token())->assertForbidden();
@@ -982,7 +982,7 @@ class CommerceTest extends TestCase
 
     public function test_cash_register_tracks_sales_movements_and_closing_count(): void
     {
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $this->getJson('/api/admin/cash/current', $admin)->assertOk()->assertJsonPath('data', null);
         $this->postJson('/api/admin/cash/movements', ['type' => 'IN', 'amount' => '10', 'reason' => 'Sencillo'], $admin)->assertConflict();
         $this->postJson('/api/admin/cash/open', ['openingAmount' => '-1'], $admin)->assertUnprocessable();
@@ -1005,7 +1005,7 @@ class CommerceTest extends TestCase
         $this->assertCount(2, $current['movements']);
 
         // Otro usuario tiene su propia caja y no ve la del primero.
-        $other = $this->token('ADMIN');
+        $other = $this->token('SUPERADMIN');
         $this->getJson('/api/admin/cash/current', $other)->assertOk()->assertJsonPath('data', null);
         $this->getJson('/api/admin/cash/current', $this->token())->assertForbidden();
 
@@ -1222,7 +1222,7 @@ class CommerceTest extends TestCase
         $this->postSandbox($this->sandboxEvent($payment, 'approved'))->assertOk()->assertJsonPath('data.status', 'REFUND_REQUIRED');
         $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'EXPIRED']);
         $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'PAYMENT_REFUND_REQUIRED']);
-        $this->getJson('/api/admin/payments?status=REFUND_REQUIRED', $this->token('ADMIN'))->assertOk()->assertJsonPath('data.total', 1);
+        $this->getJson('/api/admin/payments?status=REFUND_REQUIRED', $this->token('SUPERADMIN'))->assertOk()->assertJsonPath('data.total', 1);
     }
 
     /**
@@ -1347,7 +1347,7 @@ class CommerceTest extends TestCase
     public function test_boleta_without_customer_document_only_below_700(): void
     {
         $customer = $this->token();
-        $admin = $this->token('ADMIN');
+        $admin = $this->token('SUPERADMIN');
         $anonymous = ['type' => '03', 'documentType' => '0', 'documentNumber' => '', 'name' => ''];
         $order = $this->order($customer, $this->product(), 1, $anonymous);
         $this->assertSame(['documentType' => '0', 'documentNumber' => '-', 'name' => 'CLIENTES VARIOS'], array_intersect_key($order['billing'], array_flip(['documentType', 'documentNumber', 'name'])));

@@ -20,7 +20,8 @@ class JwtAuthenticate
                 throw new \RuntimeException;
             }
             $user = User::find($claims->sub ?? '');
-            if (! $user) {
+            // Una suspensión corta el acceso de inmediato, sin esperar a que venza el token.
+            if (! $user || $user->status !== 'ACTIVE') {
                 throw new \RuntimeException;
             }
         } catch (\Throwable $e) {

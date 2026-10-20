@@ -2,6 +2,7 @@
 
 use App\Modules\Auth\AuthController;
 use App\Modules\Catalog\CatalogController;
+use App\Modules\Inventory\InventoryController;
 use App\Modules\Invoices\InvoiceController;
 use App\Modules\Lookup\LookupController;
 use App\Modules\Orders\AdminOrderController;
@@ -13,6 +14,8 @@ use App\Modules\Payments\PaymentController;
 use App\Modules\Payments\SandboxController;
 use App\Modules\Reports\ReportController;
 use App\Modules\Suppliers\SupplierController;
+use App\Modules\Users\AuditController;
+use App\Modules\Users\UserController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->controller(AuthController::class)->group(function () {
@@ -23,6 +26,7 @@ Route::prefix('auth')->controller(AuthController::class)->group(function () {
     Route::post('logout', 'logout')->middleware('throttle:30,1');
     Route::get('me', 'me')->middleware('jwt');
     Route::get('profile', 'profile')->middleware('jwt');
+    Route::post('password', 'password')->middleware(['jwt', 'throttle:10,1']);
 });
 Route::prefix('catalog')->controller(CatalogController::class)->group(function () {
     Route::get('products', 'index');
@@ -57,7 +61,7 @@ Route::middleware('jwt')->group(function () {
         Route::get('reports/sales', [ReportController::class, 'sales'])->middleware('permission:reports:view');
         Route::post('sales', [SaleController::class, 'store'])->middleware('permission:sales:create');
         Route::get('customers', [SaleController::class, 'customers'])->middleware('permission:sales:create');
-        Route::prefix('cash')->middleware('permission:sales:create')->controller(CashController::class)->group(function () {
+        Route::prefix('cash')->middleware('permission:cash:manage')->controller(CashController::class)->group(function () {
             Route::get('current', 'current');
             Route::post('open', 'open');
             Route::post('movements', 'movement');
@@ -65,6 +69,22 @@ Route::middleware('jwt')->group(function () {
             Route::get('sessions', 'sessions');
         });
         Route::post('notifications/{id}/resend', [AdminOrderController::class, 'resendNotification'])->middleware('permission:orders:manage')->whereUuid('id');
+        // Solo superadmin: compras al por mayor, uso interno, cuentas del personal y bitácora.
+        Route::middleware('permission:inventory:manage')->controller(InventoryController::class)->group(function () {
+            Route::get('purchases', 'purchases');
+            Route::post('purchases', 'storePurchase');
+            Route::get('internal-uses', 'internalUses');
+            Route::post('internal-uses', 'storeInternalUse');
+        });
+        Route::prefix('users')->middleware('permission:users:manage')->controller(UserController::class)->group(function () {
+            Route::get('/', 'index');
+            Route::post('/', 'store');
+            Route::post('{id}/validate', 'validateAccount')->whereUuid('id');
+            Route::post('{id}/suspend', 'suspend')->whereUuid('id');
+            Route::post('{id}/reactivate', 'reactivate')->whereUuid('id');
+            Route::post('{id}/reset-password', 'resetPassword')->whereUuid('id');
+        });
+        Route::get('audit', [AuditController::class, 'index'])->middleware('permission:audit:view');
     });
     Route::post('payments', [PaymentController::class, 'store']);
     Route::get('payments/{id}', [PaymentController::class, 'show'])->whereUuid('id');

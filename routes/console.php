@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\User;
 use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Invoices\InvoiceVoiding;
 use App\Modules\Notifications\Notifier;
@@ -23,6 +24,22 @@ Artisan::command('suppliers:sync', function (SupplierService $service) {
         }
     }
 })->purpose('Sincroniza feeds CSV de proveedores activos');
+Artisan::command('users:superadmin {email}', function (string $email) {
+    // Única vía para crear superadmins: la API solo crea cuentas ADMIN.
+    $email = strtolower(trim($email));
+    $user = User::where('email', $email)->first();
+    if ($user) {
+        $user->update(['role' => 'SUPERADMIN', 'status' => 'ACTIVE']);
+        DB::table('refresh_tokens')->where('user_id', $user->id)->update(['revoked' => true]);
+        $this->info("$email ahora es SUPERADMIN (sus sesiones se cerraron para que vuelva a ingresar con el rol nuevo).");
+
+        return 0;
+    }
+    $password = Str::password(20);
+    User::create(['email' => $email, 'password' => $password, 'role' => 'SUPERADMIN', 'status' => 'ACTIVE', 'must_change_password' => true]);
+    $this->info("Superadmin $email creado. Contraseña temporal (se pide cambiarla al ingresar):");
+    $this->line($password);
+})->purpose('Crea un superadmin o promueve a superadmin una cuenta existente');
 Artisan::command('orders:expire', function (OrderService $orders) {
     $this->info('Pedidos vencidos: '.$orders->expireDue());
 })->purpose('Vence los pedidos impagos cuya reserva terminó y libera su stock');

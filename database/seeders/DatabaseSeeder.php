@@ -17,6 +17,6 @@ class DatabaseSeeder extends Seeder
         if (strlen($password) < 16 || str_starts_with($password, 'replace-with')) {
             throw new \RuntimeException('ADMIN_PASSWORD requiere al menos 16 caracteres y no puede ser un placeholder');
         }
-        User::firstOrCreate(['email' => strtolower(trim($email))], ['password' => $password, 'role' => 'ADMIN']);
+        User::firstOrCreate(['email' => strtolower(trim($email))], ['password' => $password, 'role' => 'SUPERADMIN']);
     }
 }

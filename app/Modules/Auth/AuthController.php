@@ -37,6 +37,7 @@ class AuthController
         $data = $r->validate(['email' => 'required|email', 'password' => 'required|string']);
         $user = User::where('email', strtolower(trim($data['email'])))->first();
         abort_unless($user && Hash::check($data['password'], $user->password), 401, 'Credenciales inválidas');
+        self::ensureCanSignIn($user);
 
         return Api::ok('Autenticado', DB::transaction(fn () => $this->issue($user)));
     }
@@ -69,6 +70,7 @@ class AuthController
                 $user = User::create(['email' => $email, 'password' => Str::random(64), 'role' => 'CUSTOMER',
                     'first_name' => $claims['given_name'] ?? null, 'last_name' => $claims['family_name'] ?? null]);
             }
+            self::ensureCanSignIn($user);
             if (! $user->google_sub) {
                 $user->update(['google_sub' => $claims['sub']]);
             }
@@ -85,8 +87,10 @@ class AuthController
             $token = DB::table('refresh_tokens')->where('token_hash', hash('sha256', $data['refreshToken']))->lockForUpdate()->first();
             abort_unless($token && ! $token->revoked && now()->lt($token->expires_at), 401, 'Refresh token expirado o revocado');
             DB::table('refresh_tokens')->where('id', $token->id)->update(['revoked' => true]);
+            $user = User::findOrFail($token->user_id);
+            self::ensureCanSignIn($user);
 
-            return Api::ok('Token renovado', $this->issue(User::findOrFail($token->user_id)));
+            return Api::ok('Token renovado', $this->issue($user));
         });
     }
 
@@ -103,6 +107,32 @@ class AuthController
         return Api::ok('Usuario', $r->user()->id);
     }
 
+    /**
+     * Cambio de contraseña del propio usuario. Obligatorio tras recibir una contraseña temporal;
+     * cierra las demás sesiones y devuelve tokens nuevos con los permisos ya habilitados.
+     */
+    public function password(Request $r)
+    {
+        $data = $r->validate(['currentPassword' => 'required|string', 'newPassword' => 'required|string|min:12|max:128|different:currentPassword']);
+        $user = $r->user();
+        abort_unless(Hash::check($data['currentPassword'], $user->password), 422, 'La contraseña actual no es correcta');
+
+        return DB::transaction(function () use ($user, $data) {
+            $user->update(['password' => $data['newPassword'], 'must_change_password' => false]);
+            DB::table('refresh_tokens')->where('user_id', $user->id)->update(['revoked' => true]);
+
+            return Api::ok('Contraseña actualizada', $this->issue($user->fresh()));
+        });
+    }
+
+    /** Las cuentas pendientes de validación o suspendidas no inician sesión ni renuevan tokens. */
+    public static function ensureCanSignIn(User $user): void
+    {
+        abort_if($user->status === 'PENDING', 403, 'Tu cuenta aún no ha sido validada por el superadministrador');
+        abort_if($user->status === 'SUSPENDED', 403, 'Tu cuenta está suspendida. Contacta al superadministrador');
+        abort_if($user->role === 'WALK_IN', 403, 'Esta cuenta no puede iniciar sesión');
+    }
+
     /** Datos del perfil para precargar formularios (p. ej. la facturación del checkout). */
     public function profile(Request $r)
     {
@@ -116,8 +146,9 @@ class AuthController
         $secret = config('commerce.jwt_secret');
         abort_if(strlen($secret) < 32, 503, 'JWT_SECRET no configurado');
         $refresh = Str::random(96);
+        $user->forceFill(['last_login_at' => now()])->saveQuietly();
         DB::table('refresh_tokens')->insert(['id' => (string) Str::uuid(), 'user_id' => $user->id, 'token_hash' => hash('sha256', $refresh), 'expires_at' => now()->addDays(30), 'revoked' => false]);
 
-        return ['accessToken' => JWT::encode(['iss' => 'syscon-auth', 'sub' => $user->id, 'email' => $user->email, 'given_name' => $user->first_name, 'family_name' => $user->last_name, 'iat' => time(), 'exp' => time() + 900, 'authorities' => array_merge(['ROLE_'.$user->role], $user->permissions())], $secret, 'HS256'), 'refreshToken' => $refresh, 'expiresInSeconds' => 900];
+        return ['accessToken' => JWT::encode(['iss' => 'syscon-auth', 'sub' => $user->id, 'email' => $user->email, 'given_name' => $user->first_name, 'family_name' => $user->last_name, 'iat' => time(), 'exp' => time() + 900, 'authorities' => array_merge(['ROLE_'.$user->role], $user->permissions()), 'pwd_change' => (bool) $user->must_change_password], $secret, 'HS256'), 'refreshToken' => $refresh, 'expiresInSeconds' => 900];
     }
 }
