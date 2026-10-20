@@ -242,6 +242,7 @@ class InvoiceController
             'referencedSerialNumber' => $i->referenced_serial_number, 'noteCode' => $i->note_code, 'noteReason' => $i->note_reason,
             'taxRate' => bcadd((string) $i->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $i->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $i->tax_amount, '0', 2),
             'total' => bcadd((string) $i->total, '0', 2), 'createdAt' => OrderService::iso($i->created_at), 'test' => InvoiceFiles::testing(), 'hasCdr' => ($c?->zip_base64 ?? '') !== '',
+            'sendDeadline' => in_array($i->status, ['DRAFT', 'FAILED'], true) ? InvoiceSubmission::deadline($i) : null,
             'voids' => DB::table('voided_documents')->where('invoice_id', $id)->orderBy('created_at')->get()->map(fn ($v) => InvoiceVoiding::view($v))->all(),
             'attempts' => DB::table('invoice_attempts')->leftJoin('users', 'users.id', '=', 'invoice_attempts.actor_id')->where('invoice_id', $id)->orderBy('invoice_attempts.id')
                 ->get(['invoice_attempts.*', 'users.email'])->map(fn ($a) => ['action' => $a->action, 'result' => $a->result, 'sunatCode' => $a->sunat_code, 'message' => $a->message, 'actor' => $a->email, 'at' => OrderService::iso($a->created_at)])->all(),

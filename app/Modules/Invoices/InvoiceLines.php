@@ -57,6 +57,9 @@ class InvoiceLines
             return [$this->service($reason, $amount, $rate)];
         }
         abort_unless(isset(self::CREDIT_REASONS[$code]), 422, 'Motivo de nota de crédito no soportado');
+        // RS 193-2020, anexo II: el código 02 no se usa en todos los comprobantes. Una boleta no lleva
+        // RUC del cliente; se anula con 01 y se emite de nuevo.
+        abort_if($code === '02' && $original->type === '03', 422, 'El motivo 02 (error en el RUC) es solo para facturas; para una boleta usa 01 (anulación de la operación)');
         $credited = (string) ((clone $previous)->sum('total') ?: '0');
         if (in_array($code, self::FULL_CREDIT, true)) {
             abort_if(bccomp($credited, '0', 2) > 0, 409, 'El comprobante ya tiene notas de crédito; una anulación o devolución total no puede repetir importes');

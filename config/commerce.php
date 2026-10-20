@@ -36,6 +36,9 @@ return [
         'establishment_code' => env('SUNAT_ESTABLISHMENT_CODE', '0000'),
         // Consulta de CDR (getStatusCdr) para conciliar sin reenviar; SUNAT solo la ofrece en producción.
         'consult_endpoint' => env('SUNAT_CONSULT_ENDPOINT', ''),
+        // Días calendario, desde el día siguiente a la emisión, para enviar a SUNAT (vacío: sin límite).
+        // Fijarlos con el plazo vigente: fuera de plazo SUNAT rechaza y la factura pierde su número.
+        'send_max_days' => ['F' => env('SUNAT_FACTURA_SEND_MAX_DAYS', ''), 'B' => env('SUNAT_BOLETA_SEND_MAX_DAYS', '')],
         // Domicilio fiscal que figura en la representación impresa.
         'address' => env('SUNAT_ADDRESS', ''),
     ],

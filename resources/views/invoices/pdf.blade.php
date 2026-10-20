@@ -97,6 +97,7 @@
     <tr><td>IGV ({{ $percent }}%)</td><td class="num">{{ $money($invoice->tax_amount) }}</td></tr>
     <tr class="total"><td>Importe total</td><td class="num">{{ $money($invoice->total) }}</td></tr>
 </table>
+<p><strong>Son:</strong> {{ $words }}</p>
 
 @if($qr)
     <div style="margin-top:14px;"><img src="{{ $qr }}" width="110" height="110" alt="Código QR"></div>

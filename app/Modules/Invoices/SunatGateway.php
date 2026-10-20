@@ -32,6 +32,8 @@ class SunatGateway
             throw new \RuntimeException('UBL sin ExtensionContent');
         }
         $sig = new XMLSecurityDSig;
+        // Id al que apunta cac:Signature/…/ExternalReference/URI (#SignatureSP).
+        $sig->sigNode->setAttribute('Id', 'SignatureSP');
         $sig->setCanonicalMethod(XMLSecurityDSig::C14N);
         $sig->addReference($doc, XMLSecurityDSig::SHA256, ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'], ['force_uri' => true]);
         $key = new XMLSecurityKey(XMLSecurityKey::RSA_SHA256, ['type' => 'private']);

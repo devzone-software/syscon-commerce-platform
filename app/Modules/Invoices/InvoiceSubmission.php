@@ -5,6 +5,7 @@ namespace App\Modules\Invoices;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -33,6 +34,10 @@ class InvoiceSubmission
                 return;
             }
             abort_unless(in_array($invoice->status, ['DRAFT', 'FAILED', 'PENDING_CHECK'], true), 409, 'Estado de comprobante inválido');
+            // Lo que pudo llegar (PENDING_CHECK) se concilia siempre; lo no enviado respeta el plazo.
+            $deadline = self::deadline($invoice);
+            abort_if($invoice->status !== 'PENDING_CHECK' && $deadline !== null && now('America/Lima')->toDateString() > $deadline, 422,
+                'Plazo de envío vencido el '.$deadline.': SUNAT lo rechazaría, por eso no se envía');
             abort_unless($this->gateway->configured(), 503, 'Credenciales SUNAT no configuradas');
             try {
                 $signed = $this->signed($invoice);
@@ -64,6 +69,17 @@ class InvoiceSubmission
                 $this->fail($invoice, $actor, $action, 'FAILED', null, $e->getMessage());
             }
         });
+    }
+
+    /** Último día (Y-m-d, hora de Lima) para enviar el comprobante; null si no hay plazo configurado. */
+    public static function deadline(object $invoice): ?string
+    {
+        $days = (string) config('commerce.sunat.send_max_days.'.$invoice->serial_number[0], '');
+        if (! ctype_digit($days)) {
+            return null;
+        }
+
+        return Carbon::parse($invoice->created_at)->setTimezone('America/Lima')->addDays((int) $days)->toDateString();
     }
 
     /** Concilia los pendientes; lo ejecuta el scheduler. */

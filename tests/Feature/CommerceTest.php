@@ -453,6 +453,7 @@ class CommerceTest extends TestCase
         $this->assertSame('1000', $value('/*/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cac:TaxScheme/cbc:ID'));
         $this->assertSame('30.45', $value('/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'));
         $this->assertSame('Contado', $value('/*/cac:PaymentTerms/cbc:PaymentMeansID'));
+        $this->assertSame('TREINTA CON 45/100 SOLES', $value('/*/cbc:Note[@languageLocaleID="1000"]'));
         $this->assertSame('3', $value('/*/cac:InvoiceLine/cbc:InvoicedQuantity'));
         $this->assertSame('10.15', $value('/*/cac:InvoiceLine/cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'));
         $this->assertSame('18', $value('/*/cac:InvoiceLine/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:Percent'));
@@ -486,6 +487,8 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED');
         $this->postJson('/api/invoices', ['noteCode' => null] + $note, $admin)->assertUnprocessable();
         $this->postJson('/api/invoices', ['noteCode' => '05'] + $note, $admin)->assertUnprocessable();
+        // El motivo 02 (error en el RUC) es solo para facturas.
+        $this->postJson('/api/invoices', ['noteCode' => '02'] + $note, $admin)->assertUnprocessable()->assertJsonPath('message', fn ($m) => str_contains($m, 'solo para facturas'));
         $credit = $this->postJson('/api/invoices', $note, $admin)->assertOk()->assertJsonPath('data.serialNumber', 'BC01-1')
             ->assertJsonPath('data.total', $boleta['total'])->assertJsonPath('data.taxAmount', $boleta['taxAmount'])->assertJsonPath('data.noteCode', '01')->json('data');
         $this->assertCount(count($boleta['lines']), $credit['lines']);
@@ -507,6 +510,27 @@ class CommerceTest extends TestCase
         $this->postJson('/api/invoices', $this->invoiceInput($order['id']), $admin)->assertOk()->assertJsonPath('data.serialNumber', 'F001-1');
         $events = DB::table('order_events')->where('order_id', $order['id'])->whereIn('type', ['INVOICE_ACCEPTED', 'CREDIT_NOTE_ACCEPTED'])->orderBy('id')->pluck('reference', 'type')->all();
         $this->assertSame(['INVOICE_ACCEPTED' => 'B001-1', 'CREDIT_NOTE_ACCEPTED' => 'BC01-1'], $events);
+    }
+
+    public function test_submission_respects_the_configured_send_deadline(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $this->acceptSubmissions();
+        $boleta = $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->assertJsonPath('data.sendDeadline', null)->json('data');
+        config(['commerce.sunat.send_max_days.B' => '7']);
+        $created = now()->subDays(8);
+        DB::table('invoices')->where('id', $boleta['id'])->update(['created_at' => $created]);
+        $deadline = $created->copy()->setTimezone('America/Lima')->addDays(7)->toDateString();
+        $this->getJson('/api/invoices/'.$boleta['id'], $admin)->assertOk()->assertJsonPath('data.sendDeadline', $deadline);
+        $this->postJson('/api/invoices/'.$boleta['id'].'/submit', [], $admin)->assertUnprocessable()->assertJsonPath('message', fn ($m) => str_contains($m, 'Plazo de envío vencido el '.$deadline));
+        $this->assertDatabaseHas('invoices', ['id' => $boleta['id'], 'status' => 'DRAFT']);
+        $this->assertDatabaseCount('invoice_attempts', 0);
+        // Lo que pudo llegar a SUNAT se concilia aunque haya vencido el plazo.
+        DB::table('invoices')->where('id', $boleta['id'])->update(['status' => 'PENDING_CHECK']);
+        app(SunatGateway::class)->shouldReceive('canConsult')->andReturn(false);
+        $this->postJson('/api/invoices/'.$boleta['id'].'/reconcile', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED')->assertJsonPath('data.sendDeadline', null);
+        // Las facturas tienen su propio plazo; sin configurar, no hay límite.
+        $this->assertNull(InvoiceSubmission::deadline((object) ['serial_number' => 'F001-1', 'created_at' => $created]));
     }
 
     public function test_partial_credit_and_debit_notes_respect_invoiced_amounts(): void
@@ -718,7 +742,8 @@ class CommerceTest extends TestCase
         $this->assertStringContainsString('Representación impresa de la factura electrónica', $html);
         $this->assertStringContainsString('Valor resumen: abc123=', $html);
         $this->assertStringContainsString('src="data:image/svg+xml;base64,', $html);
-        $this->assertSame('20999999995|01|F001|1|3.10|20.30|'.now('America/Lima')->toDateString().'|6|'.self::RUC.'|abc123=|', InvoiceFiles::qrText($row(), 'abc123='));
+        $this->assertSame('20999999995|01|F001|1|3.10|20.30|'.now('America/Lima')->toDateString().'|6|'.self::RUC.'|', InvoiceFiles::qrText($row()));
+        $this->assertStringContainsString('VEINTE CON 30/100 SOLES', $html);
         DB::table('invoices')->where('id', $invoice['id'])->update(['status' => 'REJECTED']);
         $this->assertStringContainsString('Rechazado por SUNAT', app(InvoiceFiles::class)->html($row()));
     }

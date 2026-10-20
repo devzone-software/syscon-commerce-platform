@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Modules\Invoices\AmountInWords;
 use App\Modules\Invoices\SunatFault;
 use App\Modules\Invoices\SunatGateway;
 use App\Modules\Invoices\UblXmlBuilder;
@@ -28,7 +29,7 @@ class SunatGatewayTest extends TestCase
             $doc = new \DOMDocument;
             $doc->loadXML($signed);
             $sig = new XMLSecurityDSig;
-            $this->assertNotNull($sig->locateSignature($doc));
+            $this->assertSame('SignatureSP', $sig->locateSignature($doc)?->getAttribute('Id'));
             $sig->canonicalizeSignedInfo();
             $this->assertTrue($sig->validateReference());
             $public = new XMLSecurityKey(XMLSecurityKey::RSA_SHA256, ['type' => 'public']);
@@ -37,6 +38,19 @@ class SunatGatewayTest extends TestCase
             $this->assertSame(1, $sig->verify($public));
         } finally {
             unlink($path);
+        }
+    }
+
+    public function test_amount_in_words_follows_spanish_rules(): void
+    {
+        foreach ([
+            '0.50' => 'CERO CON 50/100 SOLES', '1' => 'UNO CON 00/100 SOLES', '16.05' => 'DIECISÉIS CON 05/100 SOLES',
+            '100' => 'CIEN CON 00/100 SOLES', '101.10' => 'CIENTO UNO CON 10/100 SOLES', '1001' => 'MIL UNO CON 00/100 SOLES',
+            '1858.59' => 'MIL OCHOCIENTOS CINCUENTA Y OCHO CON 59/100 SOLES', '21000' => 'VEINTIÚN MIL CON 00/100 SOLES',
+            '31500.99' => 'TREINTA Y UN MIL QUINIENTOS CON 99/100 SOLES', '1000000' => 'UN MILLÓN CON 00/100 SOLES',
+            '2100000' => 'DOS MILLONES CIEN MIL CON 00/100 SOLES', '41000001' => 'CUARENTA Y UN MILLONES UNO CON 00/100 SOLES',
+        ] as $amount => $words) {
+            $this->assertSame($words, AmountInWords::soles((string) $amount));
         }
     }
 

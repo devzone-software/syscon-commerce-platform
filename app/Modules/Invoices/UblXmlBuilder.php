@@ -48,6 +48,8 @@ class UblXmlBuilder
             // 0101: venta interna.
             $this->basic($r, 'InvoiceTypeCode', $invoice->type)->setAttribute('listID', '0101');
         }
+        // Leyenda 1000 (catálogo 52): importe total en letras.
+        $this->basic($r, 'Note', AmountInWords::soles((string) $invoice->total))->setAttribute('languageLocaleID', '1000');
         $this->basic($r, 'DocumentCurrencyCode', 'PEN');
         if ($root !== 'Invoice') {
             $reason = $this->agg($r, 'DiscrepancyResponse');
