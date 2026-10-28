@@ -21,10 +21,12 @@ class MercadoPagoController
         abort_unless(MercadoPago::enabled(), 404);
         // PHP convierte "data.id" de la query en "data_id".
         $dataId = (string) ($r->query('data_id') ?? $r->input('data.id', ''));
-        abort_unless(MercadoPago::validSignature($r, $dataId), 401, 'Firma inválida');
+        // Por la notification_url también llegan avisos IPN (topic=merchant_order, topic=payment&id=N) sin
+        // esa firma; no aplican nada, así que se responde 200 para que Mercado Pago no los reintente.
         if (($r->query('type') ?? $r->input('type')) !== 'payment' || $dataId === '') {
             return response()->json(['message' => 'Evento ignorado']);
         }
+        abort_unless(MercadoPago::validSignature($r, $dataId), 401, 'Firma inválida');
         try {
             $this->sync($dataId);
         } catch (PaymentGatewayUnavailable $e) {

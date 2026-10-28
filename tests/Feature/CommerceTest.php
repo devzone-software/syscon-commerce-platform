@@ -1322,6 +1322,9 @@ class CommerceTest extends TestCase
 
         // El webhook del mismo pago llega después: firmado, no repite el cobro ni el stock.
         $this->mercadoPagoWebhook('111', 'otra-clave')->assertUnauthorized();
+        // Los avisos IPN de la notification_url no traen esa firma ni aplican nada: se ignoran con 200.
+        $this->postJson('/api/payments/webhooks/mercadopago?topic=merchant_order&id=5')->assertOk()->assertJsonPath('message', 'Evento ignorado');
+        $this->postJson('/api/payments/webhooks/mercadopago?topic=payment&id=111')->assertOk()->assertJsonPath('message', 'Evento ignorado');
         $this->mercadoPagoWebhook('111')->assertOk();
         $this->assertSame(1, DB::table('order_events')->where('order_id', $order['id'])->where('type', 'PAYMENT_CONFIRMED')->count());
         $this->assertDatabaseHas('products', ['sku' => 'SKU-1', 'stock' => 3, 'reserved' => 0]);
