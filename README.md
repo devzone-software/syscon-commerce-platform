@@ -71,7 +71,7 @@ Crear un pedido reserva unidades mediante bloqueos de fila en orden estable. El 
 
 Estados: PAYMENT_PENDING → PAID → PROCESSING → SHIPPED → DELIVERED. CANCELLED solo desde PAYMENT_PENDING. PAID se asigna al confirmar pago, no mediante el cambio administrativo de estado. La creación de pago y su confirmación son idempotentes.
 
-El adaptador operativo es MANUAL. Mercado Pago y Culqi continúan pendientes de integración con credenciales, webhooks verificables e idempotencia. Las reservas pendientes no tienen vencimiento automático; el administrador debe cancelarlas cuando corresponda.
+Los adaptadores son MANUAL (el administrador confirma la transferencia) y Mercado Pago Checkout Pro (ver más abajo); Culqi sigue sin integrar. Las reservas vencen solas: `orders:expire` (cada 5 minutos en el scheduler) pasa a EXPIRED los pedidos impagos cuya reserva terminó, libera su stock y cancela sus pagos pendientes.
 
 ## Proveedores
 
@@ -98,7 +98,7 @@ Se avisa al cliente cuando se crea su pedido, cuando se confirma el pago y cuand
 
 `PAYMENT_SANDBOX=true` y `PAYMENT_SANDBOX_SECRET` habilitan la pasarela simulada: `POST /api/payments` con `provider: SANDBOX` devuelve la URL de su página de pago (`/sandbox/checkout/{id}`), que firma el evento con HMAC-SHA256 y lo entrega a `POST /api/payments/webhooks/sandbox`. El webhook valida firma, importe, moneda y pedido, confirma con la misma transacción que el pago manual y es idempotente. Nunca activarla en producción.
 
-`MERCADOPAGO_ACCESS_TOKEN` habilita Mercado Pago Checkout Pro (`provider: MERCADOPAGO`): se crea una preferencia con `external_reference` = id del pago, vencimiento igual a la reserva del pedido y `binary_mode` (solo aprobado o rechazado), y el cliente paga en la página de Mercado Pago. El resultado nunca se toma de la URL ni de la notificación: el retorno (`/payments/mercadopago/return`) y el webhook (`POST /api/payments/webhooks/mercadopago`, firma `x-signature` con `MERCADOPAGO_WEBHOOK_SECRET`) consultan el pago en `GET /v1/payments/{id}` y lo aplican con el mismo procesamiento que la pasarela simulada. Con `APP_URL` en HTTP (local) no se pide notificación: el pago se concilia al volver el cliente. Un cobro aprobado sobre un pago cancelado (pedido vencido) queda en `REFUND_REQUIRED`, y un segundo cobro del mismo pago se registra como `PAYMENT_DUPLICATE_REFUND_REQUIRED`.
+`MERCADOPAGO_ACCESS_TOKEN` habilita Mercado Pago Checkout Pro (`provider: MERCADOPAGO`): se crea una preferencia con `external_reference` = id del pago, vencimiento igual a la reserva del pedido y `binary_mode` (solo aprobado o rechazado), y el cliente paga en la página de Mercado Pago. El resultado nunca se toma de la URL ni de la notificación: el retorno (`/payments/mercadopago/return`) y el webhook (`POST /api/payments/webhooks/mercadopago`, firma `x-signature` con `MERCADOPAGO_WEBHOOK_SECRET`) consultan el pago en `GET /v1/payments/{id}` y lo aplican con el mismo procesamiento que la pasarela simulada. Los avisos IPN que también llegan a esa URL (`topic=merchant_order`, `topic=payment&id=N`) no traen la firma y se responden con 200 sin aplicar nada. Con `APP_URL` en HTTP (local) no se pide notificación: el pago se concilia al volver el cliente. Un cobro aprobado sobre un pago cancelado (pedido vencido) queda en `REFUND_REQUIRED`, y un segundo cobro del mismo pago se registra como `PAYMENT_DUPLICATE_REFUND_REQUIRED`.
 
 ## SUNAT
 
