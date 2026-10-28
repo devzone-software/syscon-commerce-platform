@@ -41,6 +41,8 @@ El resultado es `dist/syscon-hostinger.zip`, con `syscon/` (aplicación privada)
 
 Sigue la [guía de Hostinger](docs/deployment/HOSTINGER.md) para subirlo, configurar PHP/base de datos, ejecutar migraciones y crear el cron. CI también genera este paquete como artefacto descargable.
 
+Para un servidor propio (por ejemplo AWS EC2) con checkouts de git, ver la [guía de EC2](docs/deployment/EC2.md): actualizar, copiar una base de desarrollo y configurar el webhook de Mercado Pago.
+
 ## API y seguridad
 
 Respuestas: `{"success":true,"message":"...","data":...}`. Los errores mantienen el mismo envoltorio; la validación usa HTTP 422. UUID para entidades. Importes en PEN como **cadenas decimales de dos posiciones**, para conservar precisión. Este formato monetario es un cambio frente a los números JSON de Java.
