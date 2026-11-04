@@ -30,6 +30,7 @@ Route::prefix('auth')->controller(AuthController::class)->group(function () {
 });
 Route::prefix('catalog')->controller(CatalogController::class)->group(function () {
     Route::get('products', 'index');
+    Route::get('admin/products', 'administrative')->middleware(['jwt', 'permission:catalog:write']);
     Route::get('products/{id}', 'show')->whereUuid('id');
     Route::get('categories', 'categories');
     Route::get('brands', 'brands');

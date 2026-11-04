@@ -17,7 +17,15 @@ class CatalogController
 
     public function show(string $id)
     {
-        return Api::ok('Producto', $this->catalog->get($id));
+        $product = $this->catalog->get($id);
+        abort_unless($product['active'], 404, 'Producto no disponible');
+
+        return Api::ok('Producto', $product);
+    }
+
+    public function administrative()
+    {
+        return Api::ok('Productos administrativos', $this->catalog->list(true));
     }
 
     public function store(Request $r)
