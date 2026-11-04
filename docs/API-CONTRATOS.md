@@ -29,6 +29,10 @@ pruebas de `tests/Feature/CommerceTest.php` cubren estos contratos.
 
 ## Pedidos
 
+El listado y el detalle incluyen `paymentMethods`: proveedores de pagos realmente aprobados para
+ese pedido, por ejemplo `["MERCADOPAGO"]`. Está vacío mientras no hay un pago aprobado; no se
+debe inferir el método a partir del canal o del estado del pedido.
+
 **Estados:** `PAYMENT_PENDING` → `PAID` → `PROCESSING` → `SHIPPED` → `DELIVERED`. Desde `PAYMENT_PENDING` también son posibles:
 - `CANCELLED`, por acción del personal;
 - `EXPIRED`, cuando vence la reserva (`orders:expire`).

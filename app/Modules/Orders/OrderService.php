@@ -160,6 +160,7 @@ class OrderService
         $delivery = $o->delivery_method === null ? null : ['method' => $o->delivery_method, 'cost' => $deliveryCost, 'contactName' => $o->contact_name, 'contactPhone' => $o->contact_phone, 'address' => $o->delivery_address, 'district' => $o->delivery_district, 'reference' => $o->delivery_reference];
 
         return ['id' => $o->id, 'customerId' => $o->customer_id, 'status' => $o->status, 'channel' => $o->channel ?? 'WEB', 'subtotal' => bcsub((string) $o->total, $deliveryCost, 2), 'total' => bcadd((string) $o->total, '0', 2),
+            'paymentMethods' => DB::table('payments')->where('order_id', $id)->where('status', 'APPROVED')->distinct()->pluck('provider')->all(),
             'taxes' => ['rate' => bcadd((string) $o->tax_rate, '0', 4), 'taxableAmount' => bcadd((string) $o->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $o->tax_amount, '0', 2)], 'billing' => $billing, 'delivery' => $delivery, 'createdAt' => self::iso($o->created_at), 'expiresAt' => $o->status === 'PAYMENT_PENDING' ? self::iso($o->expires_at) : null, 'details' => DB::table('order_details')->where('order_id', $id)->orderBy('product_id')->get()->map(fn ($d) => ['productId' => $d->product_id, 'sku' => $d->sku, 'name' => $d->name, 'quantity' => $d->quantity, 'unitPrice' => bcadd((string) $d->unit_price, '0', 2),
                 'lineTotal' => bcadd((string) $d->line_total, '0', 2), 'taxableAmount' => bcadd((string) $d->taxable_amount, '0', 2), 'taxAmount' => bcadd((string) $d->tax_amount, '0', 2)])->all()];
     }

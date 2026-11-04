@@ -1319,6 +1319,7 @@ class CommerceTest extends TestCase
         $this->get('/payments/mercadopago/return?payment_id=111&external_reference='.$payment['id'])->assertRedirect();
         $this->assertDatabaseHas('payments', ['id' => $payment['id'], 'status' => 'APPROVED', 'external_reference' => 'MP-111']);
         $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'PAID']);
+        $this->getJson('/api/orders/'.$order['id'], $customer)->assertOk()->assertJsonPath('data.paymentMethods', ['MERCADOPAGO']);
 
         // El webhook del mismo pago llega después: firmado, no repite el cobro ni el stock.
         $this->mercadoPagoWebhook('111', 'otra-clave')->assertUnauthorized();
