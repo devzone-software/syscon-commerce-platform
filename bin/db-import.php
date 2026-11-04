@@ -1,4 +1,5 @@
 <?php
+
 // Uso: php bin/db-import.php <export.json> <dsn> <usuario> <clave> <url-local> <url-destino>
 // Vacía cada tabla exportada e inserta sus filas en una sola transacción.
 // Reemplaza la URL local de la API (imágenes) por la del destino.
