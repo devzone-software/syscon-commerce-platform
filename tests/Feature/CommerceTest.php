@@ -94,9 +94,10 @@ class CommerceTest extends TestCase
 
     public function test_register_stores_profile_and_jwt_carries_identity_claims(): void
     {
-        $profile = ['email' => 'ana@example.com', 'password' => 'secure-password-123', 'firstName' => 'Ana', 'lastName' => 'Quispe', 'documentType' => 'DNI', 'documentNumber' => '12345678', 'phone' => '987654321'];
+        $profile = ['email' => 'ana@example.com', 'password' => 'secure-password-123', 'firstName' => 'Ana', 'lastName' => 'Quispe', 'documentType' => 'DNI', 'documentNumber' => '12345678', 'phone' => '987654321', 'contactConsent' => true, 'termsAccepted' => true];
         $id = $this->postJson('/api/auth/register', $profile)->assertCreated()->json('data');
-        $this->assertDatabaseHas('users', ['id' => $id, 'first_name' => 'Ana', 'last_name' => 'Quispe', 'document_type' => 'DNI', 'document_number' => '12345678', 'phone' => '987654321']);
+        $this->assertDatabaseHas('users', ['id' => $id, 'first_name' => 'Ana', 'last_name' => 'Quispe', 'document_type' => 'DNI', 'document_number' => '12345678', 'phone' => '987654321', 'contact_consent' => true]);
+        $this->assertNotNull(User::find($id)->terms_accepted_at);
         $this->postJson('/api/auth/register', ['phone' => '123'] + $profile + ['email' => 'otro@example.com'])->assertUnprocessable();
         $token = $this->postJson('/api/auth/login', ['email' => 'ana@example.com', 'password' => 'secure-password-123'])->json('data.accessToken');
         $claims = json_decode(base64_decode(strtr(explode('.', $token)[1], '-_', '+/')), true);

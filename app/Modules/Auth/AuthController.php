@@ -21,13 +21,15 @@ class AuthController
             'firstName' => 'nullable|string|max:80', 'lastName' => 'nullable|string|max:80',
             'documentType' => 'nullable|in:DNI,CE,RUC,PASAPORTE', 'documentNumber' => 'nullable|string|max:15',
             'phone' => ['nullable', 'regex:/^9\d{8}$/'],
+            'contactConsent' => 'nullable|boolean', 'termsAccepted' => 'nullable|boolean',
         ]);
         $email = strtolower(trim($data['email']));
         abort_if(User::where('email', $email)->exists(), 409, 'Correo ya registrado');
         $user = User::create(['email' => $email, 'password' => $data['password'], 'role' => 'CUSTOMER',
             'first_name' => $data['firstName'] ?? null, 'last_name' => $data['lastName'] ?? null,
             'document_type' => $data['documentType'] ?? null, 'document_number' => $data['documentNumber'] ?? null,
-            'phone' => $data['phone'] ?? null]);
+            'phone' => $data['phone'] ?? null, 'contact_consent' => (bool) ($data['contactConsent'] ?? false),
+            'terms_accepted_at' => ($data['termsAccepted'] ?? false) ? now() : null]);
 
         return Api::ok('Usuario creado', $user->id, 201);
     }
