@@ -2,6 +2,7 @@
 
 use App\Modules\Auth\AuthController;
 use App\Modules\Catalog\CatalogController;
+use App\Modules\Complaints\ComplaintController;
 use App\Modules\Inventory\InventoryController;
 use App\Modules\Invoices\InvoiceController;
 use App\Modules\Lookup\LookupController;
@@ -37,6 +38,8 @@ Route::prefix('catalog')->controller(CatalogController::class)->group(function (
     Route::post('products', 'store')->middleware(['jwt', 'permission:catalog:write']);
     Route::post('internal/products', 'store')->middleware('internal');
 });
+// Libro de Reclamaciones: público para registrar. El límite por visitante lo aplica la web.
+Route::post('complaints', [ComplaintController::class, 'store'])->middleware('throttle:60,1');
 Route::get('orders/delivery-options', [OrderController::class, 'deliveryOptions']);
 Route::get('payments/methods', [PaymentController::class, 'methods']);
 // Notificación de la pasarela: se autentica con la firma HMAC del cuerpo, no con JWT.
@@ -86,6 +89,11 @@ Route::middleware('jwt')->group(function () {
             Route::post('{id}/reset-password', 'resetPassword')->whereUuid('id');
         });
         Route::get('audit', [AuditController::class, 'index'])->middleware('permission:audit:view');
+        Route::prefix('complaints')->middleware('permission:orders:manage')->controller(ComplaintController::class)->group(function () {
+            Route::get('/', 'index');
+            Route::get('{id}', 'show')->whereUuid('id');
+            Route::post('{id}/respond', 'respond')->whereUuid('id');
+        });
     });
     Route::post('payments', [PaymentController::class, 'store']);
     Route::get('payments/{id}', [PaymentController::class, 'show'])->whereUuid('id');
