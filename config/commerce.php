@@ -2,6 +2,8 @@
 
 return [
     'jwt_secret' => env('JWT_SECRET', ''), 'service_token' => env('SERVICE_TOKEN', ''),
+    // Precios de referencia: comprobar que el dominio no apunte a una red interna (los tests lo apagan).
+    'pricing_check_dns' => env('PRICING_CHECK_DNS', true),
     'supplier_hosts' => array_filter(array_map('trim', explode(',', strtolower(env('SUPPLIER_ALLOWED_HOSTS', ''))))),
     // Cuenta genérica para ventas directas sin cliente registrado (no recibe correos ni inicia sesión).
     'walk_in_email' => env('WALK_IN_EMAIL', 'mostrador@syscon.local'),

@@ -17,6 +17,7 @@ use App\Modules\Reports\ReportController;
 use App\Modules\Suppliers\SupplierController;
 use App\Modules\Users\AuditController;
 use App\Modules\Users\UserController;
+use App\Modules\Pricing\PricingController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->controller(AuthController::class)->group(function () {
@@ -89,6 +90,21 @@ Route::middleware('jwt')->group(function () {
             Route::post('{id}/reset-password', 'resetPassword')->whereUuid('id');
         });
         Route::get('audit', [AuditController::class, 'index'])->middleware('permission:audit:view');
+        Route::prefix('pricing')->middleware('permission:catalog:write')->controller(PricingController::class)->group(function () {
+            Route::get('suggestions', 'suggestions');
+            Route::post('products/{productId}/approve', 'approve')->whereUuid('productId');
+            Route::post('products/{productId}/dismiss', 'dismiss')->whereUuid('productId');
+            Route::get('sources', 'sources');
+            Route::post('sources', 'storeSource');
+            Route::patch('sources/{id}', 'updateSource')->whereUuid('id');
+            Route::get('references', 'references');
+            Route::post('references', 'storeReference');
+            Route::post('references/{id}/price', 'manualPrice')->whereUuid('id');
+            Route::post('references/{id}/refresh', 'refresh')->middleware('throttle:60,1')->whereUuid('id');
+            Route::delete('references/{id}', 'deleteReference')->whereUuid('id');
+            Route::get('margins', 'margins');
+            Route::put('margins/{categoryId}', 'saveMargin')->whereUuid('categoryId');
+        });
         Route::prefix('complaints')->middleware('permission:orders:manage')->controller(ComplaintController::class)->group(function () {
             Route::get('/', 'index');
             Route::get('{id}', 'show')->whereUuid('id');

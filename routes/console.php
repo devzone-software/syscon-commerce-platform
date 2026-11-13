@@ -24,6 +24,10 @@ Artisan::command('suppliers:sync', function (SupplierService $service) {
         }
     }
 })->purpose('Sincroniza feeds CSV de proveedores activos');
+Artisan::command('prices:check', function (App\Modules\Pricing\PricingService $pricing) {
+    $counts = $pricing->refreshAll();
+    $this->info("Leídos: {$counts['OK']} · Con error: {$counts['ERROR']}");
+})->purpose('Lee los precios de las empresas de referencia');
 Artisan::command('users:superadmin {email}', function (string $email) {
     // Única vía para crear superadmins: la API solo crea cuentas ADMIN.
     $email = strtolower(trim($email));
@@ -94,4 +98,9 @@ Schedule::call(fn () => Artisan::call('orders:expire'))
 Schedule::call(fn () => Artisan::call('suppliers:sync'))
     ->name('suppliers-sync')
     ->everyFifteenMinutes()
+    ->withoutOverlapping();
+// Precios de referencia: una lectura diaria antes de abrir; los cambios se aprueban en el panel.
+Schedule::call(fn () => Artisan::call('prices:check'))
+    ->name('prices-check')
+    ->dailyAt('07:00')
     ->withoutOverlapping();
