@@ -48,17 +48,20 @@ Artisan::command('orders:expire', function (OrderService $orders) {
     $this->info('Pedidos vencidos: '.$orders->expireDue());
 })->purpose('Vence los pedidos impagos cuya reserva terminó y libera su stock');
 Artisan::command('catalog:demo-images {--force : Reemplaza también las imágenes ya asignadas}', function () {
-    // Las ilustraciones viven en public/images/products/{sku}.svg; la URL se arma con APP_URL de cada entorno.
+    // Primero la foto referencial (public/images/products/referencial/{sku}.webp, la tienda la rotula
+    // "Imagen referencial"); si no hay, la ilustración {sku}.svg. La URL se arma con APP_URL de cada entorno.
     $count = 0;
     foreach (DB::table('products')->get(['id', 'sku', 'image_url']) as $p) {
-        $file = 'images/products/'.strtolower($p->sku).'.svg';
-        if (is_file(public_path($file)) && ($this->option('force') || ! $p->image_url)) {
+        $sku = strtolower($p->sku);
+        $file = collect(["images/products/referencial/$sku.webp", "images/products/$sku.svg"])
+            ->first(fn ($candidate) => is_file(public_path($candidate)));
+        if ($file && ($this->option('force') || ! $p->image_url)) {
             DB::table('products')->where('id', $p->id)->update(['image_url' => url($file), 'updated_at' => now()]);
             $count++;
         }
     }
     $this->info("Imágenes asignadas: $count");
-})->purpose('Asigna las ilustraciones de public/images/products a los productos sin imagen');
+})->purpose('Asigna a los productos su foto referencial o, si no hay, su ilustración');
 Artisan::command('sunat:test-certificate {path=certificates/sunat-prueba.p12}', function (string $path) {
     // Solo para el servicio beta: acepta certificados autofirmados. Producción usa el certificado digital real.
     $file = str_starts_with($path, '/') || preg_match('/^[A-Za-z]:/', $path) ? $path : base_path($path);
