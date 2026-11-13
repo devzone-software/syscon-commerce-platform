@@ -36,9 +36,14 @@ class AuthController
 
     public function login(Request $r)
     {
-        $data = $r->validate(['email' => 'required|email', 'password' => 'required|string']);
-        $user = User::where('email', strtolower(trim($data['email'])))->first();
-        abort_unless($user && Hash::check($data['password'], $user->password), 401, 'Credenciales inválidas');
+        // "login" is the e-mail or the mobile number; "email" stays accepted for older clients.
+        $data = $r->validate([
+            'login' => 'required_without:email|nullable|string|max:255',
+            'email' => 'required_without:login|nullable|string|max:255',
+            'password' => 'required|string',
+        ]);
+        $user = self::userForLogin(trim($data['login'] ?? $data['email']), $data['password']);
+        abort_unless($user, 401, 'Credenciales inválidas');
         self::ensureCanSignIn($user);
 
         return Api::ok('Autenticado', DB::transaction(fn () => $this->issue($user)));
@@ -125,6 +130,24 @@ class AuthController
 
             return Api::ok('Contraseña actualizada', $this->issue($user->fresh()));
         });
+    }
+
+    /**
+     * Cuenta cuyo e-mail o celular y contraseña coinciden. El celular no es único: se prueba la
+     * contraseña en las cuentas con ese número y solo vale si coincide con exactamente una.
+     */
+    private static function userForLogin(string $login, string $password): ?User
+    {
+        $phone = preg_replace('/^(\+?51)(?=9\d{8}$)/', '', preg_replace('/[\s\-()]/', '', $login));
+        if (preg_match('/^9\d{8}$/', $phone)) {
+            $matches = User::where('phone', $phone)->limit(5)->get()
+                ->filter(fn (User $user) => Hash::check($password, $user->password));
+
+            return $matches->count() === 1 ? $matches->first() : null;
+        }
+        $user = User::where('email', strtolower($login))->first();
+
+        return $user && Hash::check($password, $user->password) ? $user : null;
     }
 
     /** Las cuentas pendientes de validación o suspendidas no inician sesión ni renuevan tokens. */

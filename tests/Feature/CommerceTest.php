@@ -104,6 +104,26 @@ class CommerceTest extends TestCase
         $this->assertSame(['ana@example.com', 'Ana', 'Quispe'], [$claims['email'], $claims['given_name'], $claims['family_name']]);
     }
 
+    public function test_login_accepts_the_mobile_number_shared_or_not(): void
+    {
+        $this->postJson('/api/auth/register', ['email' => 'ana@example.com', 'password' => 'secure-password-123', 'phone' => '987654321'])->assertCreated();
+        $this->postJson('/api/auth/login', ['login' => '987 654 321', 'password' => 'secure-password-123'])->assertOk();
+        $this->postJson('/api/auth/login', ['login' => '+51987654321', 'password' => 'secure-password-123'])->assertOk();
+        $this->postJson('/api/auth/login', ['login' => '987654321', 'password' => 'wrong-password-123'])->assertUnauthorized();
+        $this->postJson('/api/auth/login', ['login' => 'ANA@example.com', 'password' => 'secure-password-123'])->assertOk();
+
+        // A second account with the same number: the password tells them apart.
+        $this->postJson('/api/auth/register', ['email' => 'luis@example.com', 'password' => 'other-password-456', 'phone' => '987654321'])->assertCreated();
+        $token = $this->postJson('/api/auth/login', ['login' => '987654321', 'password' => 'other-password-456'])->assertOk()->json('data.accessToken');
+        $claims = json_decode(base64_decode(strtr(explode('.', $token)[1], '-_', '+/')), true);
+        $this->assertSame('luis@example.com', $claims['email']);
+
+        // Same number and same password on both: ambiguous, so nobody signs in with the phone.
+        $this->postJson('/api/auth/register', ['email' => 'eva@example.com', 'password' => 'other-password-456', 'phone' => '987654321'])->assertCreated();
+        $this->postJson('/api/auth/login', ['login' => '987654321', 'password' => 'other-password-456'])->assertUnauthorized();
+        $this->postJson('/api/auth/login', ['login' => 'eva@example.com', 'password' => 'other-password-456'])->assertOk();
+    }
+
     public function test_google_login_verifies_audience_and_creates_customer_once(): void
     {
         config(['services.google.client_id' => 'web-client']);
