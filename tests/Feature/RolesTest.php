@@ -131,6 +131,57 @@ class RolesTest extends TestCase
         $this->getJson('/api/admin/users?role=CUSTOMER', $super)->assertOk()->assertJsonPath('data.total', 1);
     }
 
+    public function test_superadmin_promotes_a_customer_and_chooses_admin_permissions(): void
+    {
+        $super = $this->token('SUPERADMIN');
+        $customer = User::create(['email' => 'luis@cliente.pe', 'password' => 'customer-password-1', 'role' => 'CUSTOMER']);
+        $customerToken = ['Authorization' => 'Bearer '.$this->login('luis@cliente.pe', 'customer-password-1')['accessToken']];
+
+        // Customer -> admin with the standard permissions.
+        $this->postJson("/api/admin/users/{$customer->id}/role", ['role' => 'ADMIN'], $super)->assertOk()
+            ->assertJsonPath('data.role', 'ADMIN')->assertJsonPath('data.customPermissions', false)
+            ->assertJsonPath('data.permissions', User::ADMIN_PERMISSIONS);
+        $this->postJson("/api/admin/users/{$customer->id}/role", ['role' => 'ADMIN'], $super)->assertConflict();
+        $this->getJson('/api/admin/orders', $customerToken)->assertOk();
+        $this->getJson('/api/admin/reports/summary', $customerToken)->assertForbidden();
+
+        // Custom permissions take effect on the next request: reports yes, orders no.
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['permissions' => ['reports:view', 'sales:create', 'catalog:write']], $super)->assertOk()
+            ->assertJsonPath('data.customPermissions', true)->assertJsonPath('data.permissions', ['catalog:write', 'sales:create', 'reports:view']);
+        $this->getJson('/api/admin/reports/summary', $customerToken)->assertOk();
+        $this->getJson('/api/admin/orders', $customerToken)->assertForbidden();
+        $fresh = $this->login('luis@cliente.pe', 'customer-password-1');
+        $this->assertSame(['ROLE_ADMIN', 'catalog:write', 'sales:create', 'reports:view'], $this->claims($fresh['accessToken'])['authorities']);
+
+        // User management stays with the superadmin; an empty set is not allowed.
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['permissions' => ['users:manage']], $super)->assertUnprocessable();
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['permissions' => []], $super)->assertUnprocessable();
+        // Back to the standard set.
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['default' => true], $super)->assertOk()
+            ->assertJsonPath('data.customPermissions', false)->assertJsonPath('data.permissions', User::ADMIN_PERMISSIONS);
+
+        // An admin cannot change roles or permissions, not even its own.
+        $this->postJson("/api/admin/users/{$customer->id}/role", ['role' => 'CUSTOMER'], $customerToken)->assertForbidden();
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['permissions' => ['reports:view']], $customerToken)->assertForbidden();
+
+        // Admin -> customer: no staff access and the sessions are closed.
+        $this->postJson("/api/admin/users/{$customer->id}/role", ['role' => 'CUSTOMER'], $super)->assertOk()->assertJsonPath('data.role', 'CUSTOMER');
+        $this->getJson('/api/admin/orders', $customerToken)->assertForbidden();
+        $this->postJson('/api/auth/refresh', ['refreshToken' => $fresh['refreshToken']])->assertUnauthorized();
+        $this->putJson("/api/admin/users/{$customer->id}/permissions", ['permissions' => ['reports:view']], $super)->assertForbidden();
+    }
+
+    public function test_roles_of_superadmins_and_of_oneself_cannot_be_changed(): void
+    {
+        $super = $this->token('SUPERADMIN');
+        $self = DB::table('users')->where('role', 'SUPERADMIN')->value('id');
+        $other = User::create(['email' => 'otro@syscon.pe', 'password' => 'staff-password-1234', 'role' => 'SUPERADMIN']);
+        $this->postJson("/api/admin/users/$self/role", ['role' => 'CUSTOMER'], $super)->assertConflict();
+        $this->postJson("/api/admin/users/{$other->id}/role", ['role' => 'CUSTOMER'], $super)->assertForbidden();
+        $this->postJson("/api/admin/users/{$other->id}/role", ['role' => 'SUPERADMIN'], $super)->assertUnprocessable();
+        $this->putJson("/api/admin/users/{$other->id}/permissions", ['permissions' => ['reports:view']], $super)->assertForbidden();
+    }
+
     public function test_audit_log_records_staff_changes_without_reads_or_customers(): void
     {
         $admin = $this->token('ADMIN');

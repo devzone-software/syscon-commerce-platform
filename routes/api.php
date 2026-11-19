@@ -88,6 +88,8 @@ Route::middleware('jwt')->group(function () {
             Route::post('{id}/suspend', 'suspend')->whereUuid('id');
             Route::post('{id}/reactivate', 'reactivate')->whereUuid('id');
             Route::post('{id}/reset-password', 'resetPassword')->whereUuid('id');
+            Route::post('{id}/role', 'role')->whereUuid('id');
+            Route::put('{id}/permissions', 'permissions')->whereUuid('id');
         });
         Route::get('audit', [AuditController::class, 'index'])->middleware('permission:audit:view');
         Route::prefix('pricing')->middleware('permission:catalog:write')->controller(PricingController::class)->group(function () {

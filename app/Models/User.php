@@ -17,13 +17,20 @@ class User extends Authenticatable
 
     public const STAFF_ROLES = ['SUPERADMIN', 'ADMIN'];
 
+    /**
+     * Lo que el superadmin puede dar a un administrador: todo menos gestionar usuarios, para que
+     * nadie por debajo pueda darse más permisos a sí mismo.
+     */
+    public const GRANTABLE_PERMISSIONS = ['catalog:write', 'orders:manage', 'payments:confirm', 'cash:manage', 'invoices:submit',
+        'sales:create', 'suppliers:manage', 'reports:view', 'inventory:manage', 'audit:view'];
+
     protected $guarded = [];
 
     protected $hidden = ['password'];
 
     protected function casts(): array
     {
-        return ['password' => 'hashed', 'must_change_password' => 'boolean'];
+        return ['password' => 'hashed', 'must_change_password' => 'boolean', 'permissions' => 'array'];
     }
 
     public function isStaff(): bool
@@ -40,8 +47,20 @@ class User extends Authenticatable
 
         return match ($this->role) {
             'SUPERADMIN' => self::SUPERADMIN_PERMISSIONS,
-            'ADMIN' => self::ADMIN_PERMISSIONS,
+            'ADMIN' => self::adminPermissions($this->getAttribute('permissions')),
             default => [],
         };
+    }
+
+    /** Permisos elegidos por el superadmin (solo los asignables) o, si no eligió, los estándar. */
+    public static function adminPermissions(mixed $chosen): array
+    {
+        if (is_string($chosen)) {
+            $chosen = json_decode($chosen, true);
+        }
+
+        return is_array($chosen)
+            ? array_values(array_intersect(self::GRANTABLE_PERMISSIONS, $chosen))
+            : self::ADMIN_PERMISSIONS;
     }
 }

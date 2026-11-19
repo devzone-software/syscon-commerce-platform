@@ -96,6 +96,42 @@ class UserController
         return Api::ok('Contraseña temporal generada', ['user' => $reply->getData(true)['data'], 'temporaryPassword' => $temporary]);
     }
 
+    /**
+     * Cliente → administrador (con los permisos estándar) o administrador → cliente (se cierran
+     * sus sesiones). Los superadmin solo se crean por consola y no se tocan desde aquí.
+     */
+    public function role(Request $r, string $id)
+    {
+        $data = $r->validate(['role' => 'required|in:ADMIN,CUSTOMER']);
+
+        return DB::transaction(function () use ($r, $id, $data) {
+            $u = DB::table('users')->where('id', $id)->lockForUpdate()->first();
+            abort_unless($u, 404, 'Usuario no encontrado');
+            abort_if($u->id === $r->user()->id, 409, 'No puedes modificar tu propia cuenta');
+            abort_unless(in_array($u->role, ['ADMIN', 'CUSTOMER'], true), 403, 'Los superadministradores no se modifican desde aquí');
+            abort_if($u->role === $data['role'], 409, $data['role'] === 'ADMIN' ? 'La cuenta ya es de administrador' : 'La cuenta ya es de cliente');
+            DB::table('users')->where('id', $id)->update(['role' => $data['role'], 'permissions' => null, 'updated_at' => now()]);
+            if ($data['role'] === 'CUSTOMER') {
+                DB::table('refresh_tokens')->where('user_id', $id)->update(['revoked' => true]);
+            }
+
+            return Api::ok($data['role'] === 'ADMIN' ? 'Ahora es administrador' : 'Ahora es cliente', self::view(DB::table('users')->where('id', $id)->first()));
+        });
+    }
+
+    /** Permisos de un administrador: los que elija el superadmin (sin gestionar usuarios) o los estándar. */
+    public function permissions(Request $r, string $id)
+    {
+        $data = $r->validate([
+            'default' => 'sometimes|boolean',
+            'permissions' => 'required_unless:default,true|array|min:1',
+            'permissions.*' => 'string|in:'.implode(',', User::GRANTABLE_PERMISSIONS),
+        ], ['permissions.min' => 'Elige al menos un permiso.', 'permissions.*.in' => 'Ese permiso no se puede asignar.']);
+        $chosen = ($data['default'] ?? false) ? null : json_encode(User::adminPermissions($data['permissions']));
+
+        return $this->change($r, $id, fn () => ['permissions' => $chosen], 'Permisos actualizados');
+    }
+
     private function change(Request $r, string $id, callable $values, string $message, bool $revoke = false)
     {
         return DB::transaction(function () use ($r, $id, $values, $message, $revoke) {
@@ -131,7 +167,14 @@ class UserController
 
         return ['id' => $u->id, 'email' => $u->email, 'firstName' => $u->first_name, 'lastName' => $u->last_name, 'role' => $u->role, 'status' => $u->status,
             'documentType' => $u->document_type, 'documentNumber' => $u->document_number, 'phone' => $u->phone,
-            'mustChangePassword' => (bool) $u->must_change_password, 'createdBy' => $names[$u->created_by] ?? null, 'validatedBy' => $names[$u->validated_by] ?? null,
+            'mustChangePassword' => (bool) $u->must_change_password,
+            // Permisos efectivos del personal y si el superadmin los personalizó.
+            'permissions' => match ($u->role) {
+                'SUPERADMIN' => User::SUPERADMIN_PERMISSIONS,
+                'ADMIN' => User::adminPermissions($u->permissions ?? null),
+                default => [],
+            },
+            'customPermissions' => $u->role === 'ADMIN' && ($u->permissions ?? null) !== null, 'createdBy' => $names[$u->created_by] ?? null, 'validatedBy' => $names[$u->validated_by] ?? null,
             'validatedAt' => OrderService::iso($u->validated_at), 'lastLoginAt' => OrderService::iso($u->last_login_at), 'createdAt' => OrderService::iso($u->created_at)];
     }
 }
