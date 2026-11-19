@@ -18,6 +18,9 @@ return [
     // Texto que ve el cliente en su solicitud de pago manual (cuentas, CCI, a quién avisar).
     // Web de la tienda: los correos enlazan al detalle del pedido ({web_url}/pedido/{id}).
     'web_url' => env('WEB_URL', ''),
+    // Automatizaciones con n8n: URL de producción de un nodo Webhook; vacía desactiva el envío.
+    // N8N_WEBHOOK_TOKEN viaja en la cabecera X-Syscon-Token (credencial "Header Auth" en n8n).
+    'n8n' => ['url' => (string) env('N8N_WEBHOOK_URL', ''), 'token' => (string) env('N8N_WEBHOOK_TOKEN', ''), 'timeout' => (int) env('N8N_TIMEOUT', 5)],
     'payments' => ['manual_instructions' => str_replace('\\n', "\n", (string) env('MANUAL_PAYMENT_INSTRUCTIONS', '')),
         // Pasarela simulada para pruebas: nunca activarla en producción.
         'sandbox' => ['enabled' => (bool) env('PAYMENT_SANDBOX', false), 'secret' => (string) env('PAYMENT_SANDBOX_SECRET', '')],

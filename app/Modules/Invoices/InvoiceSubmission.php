@@ -2,6 +2,7 @@
 
 namespace App\Modules\Invoices;
 
+use App\Modules\Integrations\N8n;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
 use Illuminate\Http\Client\ConnectionException;
@@ -149,6 +150,9 @@ class InvoiceSubmission
         $event = ['01' => 'INVOICE_ACCEPTED', '03' => 'INVOICE_ACCEPTED', '07' => 'CREDIT_NOTE_ACCEPTED', '08' => 'DEBIT_NOTE_ACCEPTED'][$invoice->type];
         $this->orders->record($invoice->order_id, $actor, $event, null, null, $invoice->serial_number);
         $this->notifier->queue($invoice->order_id, 'INVOICE_AVAILABLE', $invoice->id);
+        app(N8n::class)->emit('invoice.accepted', $invoice->id, ['invoiceId' => $invoice->id, 'orderId' => $invoice->order_id, 'type' => $invoice->type,
+            'serialNumber' => $invoice->serial_number, 'customerName' => $invoice->customer_name, 'customerDocument' => $invoice->customer_document_number,
+            'total' => bcadd((string) $invoice->total, '0', 2), 'currency' => 'PEN']);
     }
 
     private function attempt(string $id, ?string $actor, string $action, string $result, ?string $code, ?string $message): void

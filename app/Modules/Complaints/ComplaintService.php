@@ -2,6 +2,7 @@
 
 namespace App\Modules\Complaints;
 
+use App\Modules\Integrations\N8n;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -80,6 +81,9 @@ class ComplaintService
 
         $complaint = $this->get($id);
         $this->sendCopy($complaint);
+        app(N8n::class)->emit('complaint.created', $id, ['complaintId' => $id, 'code' => $complaint['code'], 'type' => $complaint['type'],
+            'consumerName' => $complaint['consumerName'], 'email' => $complaint['email'], 'phone' => $complaint['phone'],
+            'itemDescription' => $complaint['itemDescription'], 'detail' => $complaint['detail'], 'dueOn' => $complaint['dueOn']]);
 
         return $complaint;
     }

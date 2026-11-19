@@ -1,0 +1,150 @@
+{
+  "name": "SYSCON - eventos de la tienda",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "syscon",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0001",
+      "name": "SYSCON Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "5d2f7c1e-8a3b-4e6f-9c10-3b7a5e0c0001"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.event }}", "rightValue": "order.created", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Pedido nuevo"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.event }}", "rightValue": "order.paid", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Pago confirmado"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.event }}", "rightValue": "invoice.accepted", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Comprobante"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.event }}", "rightValue": "complaint.created", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Reclamo"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0002",
+      "name": "Según el evento",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "mensaje", "type": "string", "value": "=🛒 Pedido nuevo ({{ $json.body.data.channel }}) por S/ {{ $json.body.data.total }} — {{ $json.body.data.contactName }} {{ $json.body.data.contactPhone }}\n{{ $json.body.data.items.map(i => i.quantity + ' × ' + i.name).join('\\n') }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0003",
+      "name": "Mensaje pedido",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [540, 100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a2", "name": "mensaje", "type": "string", "value": "=✅ Pago confirmado: S/ {{ $json.body.data.total }} — {{ $json.body.data.contactName }}. Preparar entrega ({{ $json.body.data.deliveryMethod }})." }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0004",
+      "name": "Mensaje pago",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [540, 250]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a3", "name": "mensaje", "type": "string", "value": "=🧾 SUNAT aceptó {{ $json.body.data.serialNumber }} de {{ $json.body.data.customerName }} por S/ {{ $json.body.data.total }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0005",
+      "name": "Mensaje comprobante",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [540, 400]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a4", "name": "mensaje", "type": "string", "value": "=⚠️ Libro de Reclamaciones {{ $json.body.data.code }} ({{ $json.body.data.type }}) de {{ $json.body.data.consumerName }}. Responder antes del {{ $json.body.data.dueOn }}." }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0f6b1a52-1c1e-4c55-9d1e-5a0e8f0c0006",
+      "name": "Mensaje reclamo",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [540, 550]
+    }
+  ],
+  "connections": {
+    "SYSCON Webhook": { "main": [[{ "node": "Según el evento", "type": "main", "index": 0 }]] },
+    "Según el evento": {
+      "main": [
+        [{ "node": "Mensaje pedido", "type": "main", "index": 0 }],
+        [{ "node": "Mensaje pago", "type": "main", "index": 0 }],
+        [{ "node": "Mensaje comprobante", "type": "main", "index": 0 }],
+        [{ "node": "Mensaje reclamo", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

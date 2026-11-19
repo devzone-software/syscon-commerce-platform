@@ -94,6 +94,10 @@ La evaluación de [SEGO](docs/suppliers/SEGO.md) se conserva. No se configura sc
 
 Se avisa al cliente cuando se crea su pedido, cuando se confirma el pago y cuando SUNAT acepta su comprobante (con el PDF adjunto). Cada aviso se registra en `notifications` dentro de la transacción de la operación, una sola vez por pedido, tipo y comprobante, y se envía tras el commit. Un fallo de correo no revierte nada: `notifications:send` (cada minuto) reintenta con espera creciente hasta 5 intentos, y `POST /api/admin/notifications/{id}/resend` (orders:manage) reenvía sin repetir la operación. Configura MAIL_* y WEB_URL.
 
+## Automatizaciones con n8n
+
+Los eventos `order.created`, `order.paid`, `invoice.accepted` y `complaint.created` se envían por POST a un Webhook de n8n (cabecera `X-Syscon-Token`), con la misma bandeja de salida y reintentos que los correos (`integrations:send`, cada minuto). Se activa con `N8N_WEBHOOK_URL`/`N8N_WEBHOOK_TOKEN` y se prueba con `php artisan integrations:test`. Ver la [guía de n8n](docs/integraciones/N8N.md) y el [flujo de ejemplo](docs/integraciones/n8n-workflow-ejemplo.json).
+
 ## Consulta de RUC y pasarela de pago (modo prueba)
 
 `RUC_LOOKUP_DRIVER=migo` consulta el RUC en [MIGO](https://api.migo.pe) con el token de `RUC_LOOKUP_TOKEN` (sin token queda desactivada); las respuestas se guardan 24 h y un límite del plan o una caída no se guardan. `fake` responde con datos ficticios (`GET /api/lookup/ruc/{ruc}`; 20100000009 simula baja/no habido y 20600000005 no encontrado); `none` la desactiva. El pedido guarda lo verificado en `billing_verification`; si la consulta falla la compra continúa.

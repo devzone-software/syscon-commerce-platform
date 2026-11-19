@@ -2,6 +2,7 @@
 
 namespace App\Modules\Orders;
 
+use App\Modules\Integrations\N8n;
 use App\Modules\Lookup\RucLookup;
 use App\Modules\Notifications\Notifier;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -85,6 +86,7 @@ class OrderService
             $this->record($id, $seller ?? $customer, $seller ? 'STORE_SALE' : 'CREATED', null, 'PAYMENT_PENDING');
             // Se resuelve aquí: Notifier también depende de este servicio.
             app(Notifier::class)->queue($id, 'ORDER_CREATED');
+            app(N8n::class)->emit('order.created', $id, N8n::order($id));
 
             return $this->get($id);
         }, 3);
@@ -196,6 +198,7 @@ class OrderService
             $this->record($id, $actor, $target === 'EXPIRED' ? 'EXPIRED' : ($target === 'PAID' ? 'PAYMENT_CONFIRMED' : 'STATUS_CHANGED'), $o->status, $target, $reference);
             if ($target === 'PAID') {
                 app(Notifier::class)->queue($id, 'PAYMENT_CONFIRMED');
+                app(N8n::class)->emit('order.paid', $id, N8n::order($id));
             }
 
             return $this->get($id);

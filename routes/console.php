@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Modules\Integrations\N8n;
 use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Invoices\InvoiceVoiding;
 use App\Modules\Notifications\Notifier;
@@ -91,6 +92,31 @@ Artisan::command('notifications:send', function (Notifier $notifier) {
 })->purpose('Envía los correos pendientes y reintenta los fallidos cuyo plazo venció');
 Schedule::call(fn () => Artisan::call('notifications:send'))
     ->name('notifications-send')
+    ->everyMinute()
+    ->withoutOverlapping();
+Artisan::command('integrations:send', function (N8n $n8n) {
+    $this->info('Eventos enviados a n8n: '.$n8n->sendDue());
+})->purpose('Envía a n8n los eventos pendientes y reintenta los fallidos');
+Artisan::command('integrations:test', function (N8n $n8n) {
+    if (! N8n::enabled()) {
+        $this->error('N8N_WEBHOOK_URL está vacío: la integración con n8n está desactivada.');
+
+        return 1;
+    }
+    $subject = (string) Str::uuid();
+    $n8n->emit('test.ping', $subject, ['message' => 'Prueba de conexión desde SYSCON']);
+    $e = DB::table('integration_events')->where('event', 'test.ping')->where('subject', $subject)->first();
+    if ($e?->status === 'SENT') {
+        $this->info('n8n recibió el evento de prueba.');
+
+        return 0;
+    }
+    $this->error('n8n no recibió el evento: '.($e->last_error ?? 'sin detalle'));
+
+    return 1;
+})->purpose('Envía un evento de prueba (test.ping) al webhook de n8n');
+Schedule::call(fn () => Artisan::call('integrations:send'))
+    ->name('integrations-send')
     ->everyMinute()
     ->withoutOverlapping();
 Schedule::call(fn () => Artisan::call('orders:expire'))
