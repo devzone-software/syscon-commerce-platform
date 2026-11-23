@@ -110,10 +110,24 @@ class SunatGatewayTest extends TestCase
             $this->assertSame('SUNAT 2335: El documento electrónico ingresado ha sido alterado', $e->getMessage());
         }
         $this->assertFalse((new SunatFault('0111', 'No tiene el perfil'))->rejects());
+
         $this->assertNull(SunatFault::fromSoap('<html>Bad gateway</html>'));
 
         $cdr = $this->cdr('<ApplicationResponse xmlns:cbc="urn:test"><cbc:ResponseCode>0</cbc:ResponseCode><cbc:Description>Aceptada</cbc:Description><cbc:Note>4252 - El dato ingresado como atributo no corresponde</cbc:Note></ApplicationResponse>');
         $this->assertSame(['0', 'Aceptada Observaciones: 4252 - El dato ingresado como atributo no corresponde'], app(SunatGateway::class)->parseCdr($cdr));
+    }
+
+    public function test_soap_fault_with_http_200_is_not_hidden(): void
+    {
+        config(['commerce.sunat.ruc' => '20123456789', 'commerce.sunat.user' => 'USER', 'commerce.sunat.password' => 'x']);
+        // SUNAT también responde faults con HTTP 200: no deben confundirse con "sin ticket".
+        Http::fake(['*' => Http::response('<soap-env:Envelope xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"><soap-env:Body><soap-env:Fault><faultcode>soap-env:Client.2992</faultcode><faultstring>El XML no contiene el tag de la tasa del tributo de la línea</faultstring></soap-env:Fault></soap-env:Body></soap-env:Envelope>', 200)]);
+        try {
+            app(SunatGateway::class)->sendSummary('20123456789-RC-20261123-1', '<SummaryDocuments/>');
+            $this->fail('Se esperaba un SOAP fault');
+        } catch (SunatFault $e) {
+            $this->assertSame('2992', $e->sunatCode);
+        }
     }
 
     public function test_status_cdr_query_reads_code_and_content(): void

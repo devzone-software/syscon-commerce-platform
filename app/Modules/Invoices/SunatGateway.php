@@ -76,8 +76,12 @@ class SunatGateway
         $escape = fn ($s) => htmlspecialchars((string) $s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
         $payload = '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://service.sunat.gob.pe"><soapenv:Header><wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><wsse:UsernameToken><wsse:Username>'.$escape(config('commerce.sunat.ruc').config('commerce.sunat.user')).'</wsse:Username><wsse:Password>'.$escape(config('commerce.sunat.password')).'</wsse:Password></wsse:UsernameToken></wsse:Security></soapenv:Header><soapenv:Body>'.$body.'</soapenv:Body></soapenv:Envelope>';
         $response = Http::connectTimeout(10)->timeout(30)->withOptions(['allow_redirects' => false])->withHeaders(['SOAPAction' => $action])->withBody($payload, 'text/xml; charset=utf-8')->post($endpoint);
+        // SUNAT también devuelve SOAP faults con HTTP 200 (p. ej. el error 2992 de un resumen diario).
+        if ($fault = SunatFault::fromSoap($response->body())) {
+            throw $fault;
+        }
         if ($response->status() !== 200) {
-            throw SunatFault::fromSoap($response->body()) ?? new \RuntimeException('SUNAT HTTP '.$response->status());
+            throw new \RuntimeException('SUNAT HTTP '.$response->status());
         }
 
         return $this->parseXml($response->body());

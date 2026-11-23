@@ -1201,7 +1201,9 @@ class CommerceTest extends TestCase
             return str_starts_with($name, '20000000001-RC-') && $doc->documentElement->localName === 'SummaryDocuments'
                 && $doc->getElementsByTagName('ConditionCode')->item(0)->textContent === '3'
                 && $doc->getElementsByTagName('SummaryDocumentsLine')->item(0)->getElementsByTagName('ID')->item(0)->textContent === 'B001-1'
-                && $doc->getElementsByTagName('TotalAmount')->item(0)->textContent === '20.30';
+                && $doc->getElementsByTagName('TotalAmount')->item(0)->textContent === '20.30'
+                // Tasa del IGV en la línea (SUNAT la exige: error 2992).
+                && $doc->getElementsByTagName('TaxCategory')->item(0)->getElementsByTagName('Percent')->item(0)?->textContent === '18';
         })->andReturn('TICKET-1');
         // Primero SUNAT aún procesa; la segunda consulta trae el CDR.
         $gateway->shouldReceive('ticketStatus')->with('TICKET-1')->twice()->andReturn(['code' => '98', 'cdr' => null], ['code' => '0', 'cdr' => 'CDR-RC']);

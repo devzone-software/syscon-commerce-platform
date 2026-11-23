@@ -56,7 +56,10 @@ class SummaryXmlBuilder
         $this->amount($this->basic($tax, 'TaxAmount', ''), $invoice->tax_amount);
         $subtotal = $this->el($tax, self::CAC, 'cac:TaxSubtotal');
         $this->amount($this->basic($subtotal, 'TaxAmount', ''), $invoice->tax_amount);
-        $scheme = $this->el($this->el($subtotal, self::CAC, 'cac:TaxCategory'), self::CAC, 'cac:TaxScheme');
+        $category = $this->el($subtotal, self::CAC, 'cac:TaxCategory');
+        // Tasa del IGV de la línea: sin ella SUNAT rechaza el resumen (error 2992, "Tasa del tributo faltante").
+        $this->basic($category, 'Percent', rtrim(rtrim(bcmul((string) $invoice->tax_rate, '100', 2), '0'), '.'));
+        $scheme = $this->el($category, self::CAC, 'cac:TaxScheme');
         $this->basic($scheme, 'ID', '1000');
         $this->basic($scheme, 'Name', 'IGV');
         $this->basic($scheme, 'TaxTypeCode', 'VAT');
