@@ -3,6 +3,7 @@
 namespace App\Modules\Suppliers;
 
 use App\Modules\Catalog\CatalogService;
+use App\Modules\Pricing\PricingService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -11,7 +12,7 @@ use Illuminate\Support\Str;
 
 class SupplierService
 {
-    public function __construct(private CatalogService $catalog) {}
+    public function __construct(private CatalogService $catalog, private PricingService $pricing) {}
 
     public function validateUrl(string $url): void
     {
@@ -83,7 +84,12 @@ class SupplierService
                 abort_unless(DB::table('supplier_jobs')->where('id', $job['id'])->value('status') === 'RUNNING', 409, 'Ejecución reemplazada');
                 ksort($rows);
                 foreach ($rows as $data) {
-                    $this->catalog->upsert($data);
+                    // El precio del feed es el costo del proveedor: no reemplaza el precio de venta ni
+                    // la visibilidad de un producto existente, y llega como sugerencia a Precios de
+                    // referencia. Un producto nuevo se crea oculto hasta que se apruebe su precio.
+                    $current = DB::table('products')->where('sku', $data['sku'])->first(['price', 'active']);
+                    $product = $this->catalog->upsert($current ? ['price' => (string) $current->price, 'active' => (bool) $current->active] + $data : ['active' => false] + $data);
+                    $this->pricing->supplierPrice($id, $product['id'], $data['price']);
                     $existing = DB::table('supplier_products')->where('supplier_id', $id)->where('sku', $data['sku'])->first();
                     DB::table('supplier_products')->updateOrInsert(['supplier_id' => $id, 'sku' => $data['sku']], ['id' => $existing?->id ?? (string) Str::uuid(), 'name' => $data['name'], 'price' => $data['price'], 'stock' => $data['stock'], 'image_url' => $data['imageUrl'], 'brand' => $data['brand'], 'category' => $data['category']]);
                 }

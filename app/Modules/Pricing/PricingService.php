@@ -5,6 +5,7 @@ namespace App\Modules\Pricing;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use RuntimeException;
 
 /**
@@ -111,6 +112,8 @@ class PricingService
     {
         return DB::table('price_sources as s')
             ->leftJoin('price_references as r', 'r.source_id', '=', 's.id')
+            // Las fuentes de los proveedores se administran desde Proveedores.
+            ->whereNull('s.supplier_id')
             ->groupBy('s.id', 's.name', 's.host', 's.active')
             ->orderBy('s.name')
             ->get(['s.id', 's.name', 's.host', 's.active', DB::raw('count(r.id) as links')])
@@ -125,7 +128,7 @@ class PricingService
         abort_if(DB::table('price_sources')->where('host', $host)->when($id, fn ($q) => $q->where('id', '!=', $id))->exists(), 422, 'Esa web ya está registrada.');
         $row = ['name' => trim($data['name']), 'host' => $host, 'active' => $data['active'] ?? true, 'updated_at' => now()];
         if ($id) {
-            abort_unless(DB::table('price_sources')->where('id', $id)->update($row), 404, 'Empresa no encontrada');
+            abort_unless(DB::table('price_sources')->where('id', $id)->whereNull('supplier_id')->update($row), 404, 'Empresa no encontrada');
         } else {
             $id = (string) Str::uuid();
             DB::table('price_sources')->insert($row + ['id' => $id, 'created_at' => now()]);
@@ -142,10 +145,10 @@ class PricingService
             ->join('price_sources as s', 's.id', '=', 'r.source_id')
             ->join('products as p', 'p.id', '=', 'r.product_id')
             ->orderBy('p.name')->orderBy('s.name')
-            ->get(['r.id', 'r.product_id', 'p.name as product', 'p.sku', 'r.source_id', 's.name as source', 's.active as source_active', 'r.url', 'r.price', 'r.status', 'r.error', 'r.checked_at'])
+            ->get(['r.id', 'r.product_id', 'p.name as product', 'p.sku', 'r.source_id', 's.name as source', 's.active as source_active', 's.supplier_id', 'r.url', 'r.price', 'r.status', 'r.error', 'r.checked_at'])
             ->map(fn ($r) => [
                 'id' => $r->id, 'productId' => $r->product_id, 'product' => $r->product, 'sku' => $r->sku,
-                'sourceId' => $r->source_id, 'source' => $r->source, 'sourceActive' => (bool) $r->source_active,
+                'sourceId' => $r->source_id, 'source' => $r->source, 'sourceActive' => (bool) $r->source_active, 'fromSupplier' => $r->supplier_id !== null,
                 'url' => $r->url, 'price' => $r->price === null ? null : number_format((float) $r->price, 2, '.', ''),
                 'status' => $r->status, 'error' => $r->error, 'checkedAt' => $r->checked_at,
             ])->all();
@@ -156,7 +159,7 @@ class PricingService
     {
         $data = Validator::make($input, [
             'productId' => 'required|uuid|exists:products,id',
-            'sourceId' => 'required|uuid|exists:price_sources,id',
+            'sourceId' => ['required', 'uuid', Rule::exists('price_sources', 'id')->whereNull('supplier_id')],
             'url' => 'required|string|max:2048',
             'price' => 'nullable|numeric|min:0.01|max:999999999999.99|decimal:0,2',
         ])->validate();
@@ -182,6 +185,7 @@ class PricingService
     {
         $data = Validator::make($input, ['price' => 'required|numeric|min:0.01|max:999999999999.99|decimal:0,2'])->validate();
         abort_unless(DB::table('price_references')->where('id', $id)->exists(), 404, 'Enlace no encontrado');
+        $this->notFromSupplier($id);
         $this->record($id, (float) $data['price'], 'MANUAL');
 
         return collect($this->references())->firstWhere('id', $id);
@@ -197,6 +201,7 @@ class PricingService
     {
         $ref = DB::table('price_references')->where('id', $id)->first();
         abort_unless($ref, 404, 'Enlace no encontrado');
+        $this->notFromSupplier($id);
         try {
             $this->record($id, $this->reader->read($ref->url), 'OK');
         } catch (RuntimeException $e) {
@@ -211,12 +216,40 @@ class PricingService
     {
         $counts = ['OK' => 0, 'ERROR' => 0];
         $ids = DB::table('price_references as r')->join('price_sources as s', 's.id', '=', 'r.source_id')
-            ->where('s.active', true)->orderBy('r.checked_at')->pluck('r.id');
+            ->where('s.active', true)->whereNull('s.supplier_id')->orderBy('r.checked_at')->pluck('r.id');
         foreach ($ids as $id) {
             $counts[$this->refresh($id)['status'] === 'ERROR' ? 'ERROR' : 'OK']++;
         }
 
         return $counts;
+    }
+
+    /**
+     * Precio que trae el feed CSV de un proveedor: se guarda como referencia (costo, en soles con
+     * IGV) del producto, con origen SUPPLIER. No cambia el precio de venta: la sugerencia se
+     * aprueba en Precios de referencia con el margen de la categoría.
+     */
+    public function supplierPrice(string $supplierId, string $productId, string $price): void
+    {
+        $supplier = DB::table('suppliers')->where('id', $supplierId)->first(['name', 'feed_url']);
+        $sourceId = DB::table('price_sources')->where('supplier_id', $supplierId)->value('id');
+        if (! $sourceId) {
+            $sourceId = (string) Str::uuid();
+            DB::table('price_sources')->insert(['id' => $sourceId, 'supplier_id' => $supplierId, 'name' => mb_substr('Proveedor: '.$supplier->name, 0, 120),
+                'host' => 'proveedor-'.$supplierId, 'active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        }
+        $refId = DB::table('price_references')->where('product_id', $productId)->where('source_id', $sourceId)->value('id');
+        if (! $refId) {
+            $refId = (string) Str::uuid();
+            DB::table('price_references')->insert(['id' => $refId, 'product_id' => $productId, 'source_id' => $sourceId, 'url' => $supplier->feed_url, 'created_at' => now(), 'updated_at' => now()]);
+        }
+        $this->record($refId, (float) $price, 'SUPPLIER');
+    }
+
+    private function notFromSupplier(string $referenceId): void
+    {
+        $supplier = DB::table('price_references as r')->join('price_sources as s', 's.id', '=', 'r.source_id')->where('r.id', $referenceId)->value('s.supplier_id');
+        abort_if($supplier !== null, 409, 'Este precio llega con la sincronización del proveedor');
     }
 
     private function record(string $id, float $price, string $origin): void

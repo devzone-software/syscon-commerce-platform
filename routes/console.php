@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use App\Modules\Integrations\N8n;
+use App\Modules\Invoices\InvoiceIssuer;
 use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Invoices\InvoiceVoiding;
 use App\Modules\Notifications\Notifier;
@@ -83,6 +84,13 @@ Artisan::command('invoices:reconcile', function (InvoiceSubmission $submission) 
     $this->info('Comprobantes conciliados: '.$submission->reconcilePending());
     $this->info('Anulaciones consultadas: '.app(InvoiceVoiding::class)->checkPending());
 })->purpose('Concilia con SUNAT los comprobantes que quedaron sin respuesta');
+Artisan::command('invoices:issue', function (InvoiceIssuer $issuer) {
+    $this->info('Comprobantes emitidos: '.$issuer->issuePending());
+})->purpose('Emite y envía a SUNAT la boleta o factura de los pedidos recién pagados (SUNAT_AUTO_ISSUE)');
+Schedule::call(fn () => Artisan::call('invoices:issue'))
+    ->name('invoices-issue')
+    ->everyMinute()
+    ->withoutOverlapping();
 Schedule::call(fn () => Artisan::call('invoices:reconcile'))
     ->name('invoices-reconcile')
     ->everyTenMinutes()

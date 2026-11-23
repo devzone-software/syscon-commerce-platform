@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Modules\Catalog\CatalogService;
 use App\Modules\Invoices\InvoiceFiles;
+use App\Modules\Invoices\InvoiceIssuer;
 use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Invoices\SunatFault;
 use App\Modules\Invoices\SunatGateway;
@@ -146,6 +147,20 @@ class CommerceTest extends TestCase
         $this->getJson('/api/auth/me', ['Authorization' => 'Bearer invalid'])->assertUnauthorized()->assertJsonPath('success', false);
         $this->getJson('/api/orders/internal/'.Str::uuid())->assertUnauthorized();
         $this->postJson('/api/auth/register', ['email' => 'wrong', 'password' => 'short'])->assertUnprocessable()->assertJsonPath('success', false);
+    }
+
+    public function test_internal_routes_only_accept_the_allowed_network(): void
+    {
+        $token = ['X-Service-Token' => str_repeat('s', 64)];
+        $id = (string) Str::uuid();
+        // Desde Internet, ni con el token correcto.
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.5'])->getJson('/api/orders/internal/'.$id, $token)->assertForbidden();
+        // Desde el mismo servidor sí llega a la ruta (pedido inexistente: 404).
+        $this->withServerVariables(['REMOTE_ADDR' => '127.0.0.1'])->getJson('/api/orders/internal/'.$id, $token)->assertNotFound();
+        // Una red privada configurada (p. ej. la de Docker) también.
+        config(['commerce.internal_allowed_ips' => ['127.0.0.1', '172.16.0.0/12']]);
+        $this->withServerVariables(['REMOTE_ADDR' => '172.18.0.4'])->getJson('/api/orders/internal/'.$id, $token)->assertNotFound();
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.5'])->getJson('/api/orders/internal/'.$id, $token)->assertForbidden();
     }
 
     public function test_catalog_upsert_and_internal_access(): void
@@ -337,6 +352,38 @@ class CommerceTest extends TestCase
         $this->assertDatabaseHas('products', ['sku' => 'CSV-1', 'name' => 'Producto; especial']);
         $this->getJson('/api/suppliers/jobs/'.$job['id'].'/history', $admin)->assertOk()->assertJsonPath('data.0.level', 'INFO');
         $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertTooManyRequests();
+    }
+
+    public function test_supplier_price_is_a_suggestion_not_the_selling_price(): void
+    {
+        config(['commerce.supplier_hosts' => ['feeds.example.com']]);
+        $admin = $this->token('SUPERADMIN');
+        $existing = $this->product(5, 'SUP-OLD');
+        $s = $this->postJson('/api/suppliers', ['name' => 'Mayorista', 'feedUrl' => 'https://feeds.example.com/data.csv', 'minIntervalMinutes' => 15], $admin)->assertOk()->json('data');
+        Http::fake(['feeds.example.com/*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nSUP-OLD;Producto & prueba;7.00;8;;SYSCON;Computación\nSUP-NEW;Nuevo;80.00;4;;;Computación\n", 200)]);
+        $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertOk()->assertJsonPath('data.status', 'SUCCEEDED');
+        // El existente conserva su precio de venta y su visibilidad; el stock sí viene del feed.
+        $this->assertDatabaseHas('products', ['sku' => 'SUP-OLD', 'price' => '10.15', 'active' => true, 'stock' => 8]);
+        // El nuevo queda oculto hasta aprobar su precio.
+        $this->assertDatabaseHas('products', ['sku' => 'SUP-NEW', 'active' => false]);
+        // Con margen de categoría, la sugerencia sale del costo del proveedor.
+        $category = DB::table('categories')->where('name', 'Computación')->value('id');
+        $this->putJson('/api/admin/pricing/margins/'.$category, ['margin' => '20'], $admin)->assertOk();
+        $rows = collect($this->getJson('/api/admin/pricing/suggestions', $admin)->assertOk()->json('data'))->keyBy('sku');
+        $this->assertSame('7.00', $rows['SUP-OLD']['referencePrice']);
+        $this->assertSame('Proveedor: Mayorista', $rows['SUP-OLD']['referenceSource']);
+        $this->assertSame('8.90', $rows['SUP-OLD']['suggestedPrice']);
+        $this->assertSame('96.90', $rows['SUP-NEW']['suggestedPrice']);
+        // Sus referencias no se leen de una web ni se escriben a mano, y la fuente no figura entre las empresas.
+        $ref = collect($this->getJson('/api/admin/pricing/references', $admin)->json('data'))->firstWhere('sku', 'SUP-OLD');
+        $this->assertTrue($ref['fromSupplier']);
+        $this->assertSame('SUPPLIER', $ref['status']);
+        $this->postJson('/api/admin/pricing/references/'.$ref['id'].'/refresh', [], $admin)->assertConflict();
+        $this->postJson('/api/admin/pricing/references/'.$ref['id'].'/price', ['price' => '6.00'], $admin)->assertConflict();
+        $this->assertSame([], $this->getJson('/api/admin/pricing/sources', $admin)->json('data'));
+        // Aprobar aplica el precio de venta.
+        $this->postJson('/api/admin/pricing/products/'.$existing['id'].'/approve', ['price' => '8.90'], $admin)->assertOk();
+        $this->assertDatabaseHas('products', ['sku' => 'SUP-OLD', 'price' => '8.90']);
     }
 
     public function test_invalid_supplier_feed_does_not_partially_import(): void
@@ -550,8 +597,61 @@ class CommerceTest extends TestCase
         DB::table('invoices')->where('id', $boleta['id'])->update(['status' => 'PENDING_CHECK']);
         app(SunatGateway::class)->shouldReceive('canConsult')->andReturn(false);
         $this->postJson('/api/invoices/'.$boleta['id'].'/reconcile', [], $admin)->assertOk()->assertJsonPath('data.status', 'ACCEPTED')->assertJsonPath('data.sendDeadline', null);
-        // Las facturas tienen su propio plazo; sin configurar, no hay límite.
-        $this->assertNull(InvoiceSubmission::deadline((object) ['serial_number' => 'F001-1', 'created_at' => $created]));
+        // Facturas y sus notas: hasta el día siguiente a la emisión (RS 193-2020), salvo otra configuración.
+        $this->assertSame($created->copy()->setTimezone('America/Lima')->addDay()->toDateString(), InvoiceSubmission::deadline((object) ['serial_number' => 'F001-1', 'created_at' => $created]));
+        config(['commerce.sunat.send_max_days.F' => '']);
+        $this->assertNull(InvoiceSubmission::deadline((object) ['serial_number' => 'FC01-1', 'created_at' => $created]));
+    }
+
+    public function test_paid_orders_get_their_receipt_issued_and_sent_automatically(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        $this->acceptSubmissions();
+        $issuer = app(InvoiceIssuer::class);
+        // Desactivada por defecto: el backoffice emite a mano.
+        $this->assertSame(0, $issuer->issuePending());
+        $this->assertDatabaseCount('invoices', 0);
+
+        config(['commerce.sunat.auto_issue' => true]);
+        // Un pedido pagado hace días no se factura al activar la opción.
+        [$old] = $this->paidOrder();
+        DB::table('order_events')->where('order_id', $old['id'])->where('type', 'PAYMENT_CONFIRMED')->update(['created_at' => now()->subDays(3)]);
+        // Datos de facturación que no permiten emitir: queda marcado para el backoffice, sin reintentos.
+        [$broken] = $this->paidOrder();
+        DB::table('orders')->where('id', $broken['id'])->update(['billing_document_number' => '123']);
+
+        $this->assertSame(1, $issuer->issuePending());
+        // El cliente compró con boleta y DNI: B001-1 con sus datos, aceptada.
+        $this->assertDatabaseHas('invoices', ['order_id' => $order['id'], 'type' => '03', 'serial_number' => 'B001-1', 'status' => 'ACCEPTED', 'customer_document_number' => '12345678']);
+        $this->assertDatabaseHas('order_events', ['order_id' => $order['id'], 'type' => 'INVOICE_ACCEPTED', 'reference' => 'B001-1', 'actor_id' => null]);
+        $this->assertDatabaseMissing('invoices', ['order_id' => $old['id']]);
+        $this->assertDatabaseMissing('invoices', ['order_id' => $broken['id']]);
+        $this->assertDatabaseHas('order_events', ['order_id' => $broken['id'], 'type' => InvoiceIssuer::AUTO_FAILED]);
+
+        // Otra vuelta no emite de nuevo ni repite el intento fallido.
+        $this->assertSame(0, $issuer->issuePending());
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertSame(1, DB::table('order_events')->where('order_id', $broken['id'])->where('type', InvoiceIssuer::AUTO_FAILED)->count());
+        // El backoffice ve el mismo comprobante y no puede emitir otro.
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertOk()->assertJsonPath('message', 'Comprobante ya registrado')->assertJsonPath('data.serialNumber', 'B001-1');
+    }
+
+    public function test_auto_issue_waits_for_sunat_credentials(): void
+    {
+        [$order] = $this->paidOrder();
+        config(['commerce.sunat.auto_issue' => true]);
+        // Sin credenciales no se consume un correlativo que luego no se podría enviar.
+        $this->assertSame(0, app(InvoiceIssuer::class)->issuePending());
+        $this->assertDatabaseMissing('invoices', ['order_id' => $order['id']]);
+    }
+
+    public function test_lines_without_price_are_not_invoiced_as_taxed_sales(): void
+    {
+        [$order, $admin] = $this->paidOrder();
+        DB::table('order_details')->where('order_id', $order['id'])->update(['unit_price' => '0.00', 'line_total' => '0.00', 'taxable_amount' => '0.00', 'tax_amount' => '0.00']);
+        $this->postJson('/api/invoices', ['orderId' => $order['id'], 'type' => '03'], $admin)->assertUnprocessable()->assertJsonPath('message', fn ($m) => str_contains($m, 'precio 0'));
+        $this->assertDatabaseCount('invoices', 0);
+        $this->assertDatabaseHas('invoice_series', ['series' => 'B001', 'last_number' => 0]);
     }
 
     public function test_partial_credit_and_debit_notes_respect_invoiced_amounts(): void

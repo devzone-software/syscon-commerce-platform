@@ -3,6 +3,7 @@
 namespace App\Modules\Complaints;
 
 use App\Modules\Integrations\N8n;
+use App\Support\PeruHolidays;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -18,7 +19,7 @@ use Illuminate\Support\Str;
  */
 class ComplaintService
 {
-    /** Plazo de respuesta en días hábiles (lunes a viernes; no descuenta feriados). */
+    /** Plazo de respuesta en días hábiles (lunes a viernes, sin feriados nacionales). */
     public const RESPONSE_BUSINESS_DAYS = 15;
 
     public const TYPES = ['RECLAMO', 'QUEJA'];
@@ -116,13 +117,13 @@ class ComplaintService
         return $complaint;
     }
 
-    /** Fecha límite: suma días hábiles (lunes a viernes) desde el día siguiente al registro. */
+    /** Fecha límite: suma días hábiles (lunes a viernes, sin feriados) desde el día siguiente al registro. */
     public static function dueOn(CarbonImmutable $from): CarbonImmutable
     {
         $day = $from->startOfDay();
         for ($left = self::RESPONSE_BUSINESS_DAYS; $left > 0;) {
             $day = $day->addDay();
-            if (! $day->isWeekend()) {
+            if (PeruHolidays::isBusinessDay($day)) {
                 $left--;
             }
         }

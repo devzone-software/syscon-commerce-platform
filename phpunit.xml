@@ -42,5 +42,9 @@
         <env name="SUNAT_CERTIFICATE_PASSWORD" value="" force="true"/>
         <env name="SUNAT_ADDRESS" value="" force="true"/>
         <env name="SUNAT_ENDPOINT" value="https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService" force="true"/>
+        <env name="SUNAT_CONSULT_ENDPOINT" value="" force="true"/>
+        <env name="SUNAT_AUTO_ISSUE" value="false" force="true"/>
+        <env name="SUNAT_FACTURA_SEND_MAX_DAYS" value="1" force="true"/>
+        <env name="SUNAT_BOLETA_SEND_MAX_DAYS" value="" force="true"/>
     </php>
 </phpunit>

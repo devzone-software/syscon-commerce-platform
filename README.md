@@ -56,7 +56,7 @@ Respuestas: `{"success":true,"message":"...","data":...}`. Los errores mantienen
 - Suppliers: ADMIN usa `GET|POST /api/suppliers`, `POST /{id}/run`, `GET /jobs`, `GET /jobs/{id}/history`.
 - Invoices: ADMIN usa `POST /api/invoices` (sin correlativo; opcional `series`), `GET|PATCH /{id}` (el PATCH corrige el cliente solo en borrador), `POST /{id}/submit` y `GET|POST /api/invoices/series`, `PATCH /api/invoices/series/{id}` (`active`).
 
-Los clientes acceden únicamente a sus pedidos y pagos. ADMIN tiene los permisos del sistema original. Las operaciones internas de catálogo y pedidos conservan `X-Service-Token`; en esta arquitectura los módulos llaman directamente a sus servicios PHP, sin HTTP entre procesos. Mantén JWT_SECRET y SERVICE_TOKEN distintos y con al menos 32 caracteres.
+Los clientes acceden únicamente a sus pedidos y pagos. ADMIN tiene los permisos del sistema original. Las operaciones internas de catálogo y pedidos (`/internal/`) exigen `X-Service-Token` y, además, venir de una red permitida (`INTERNAL_ALLOWED_IPS`, por defecto solo el mismo servidor; acepta CIDR, p. ej. la red de Docker); en esta arquitectura los módulos llaman directamente a sus servicios PHP, sin HTTP entre procesos. Mantén JWT_SECRET y SERVICE_TOKEN distintos y con al menos 32 caracteres.
 
 Ejemplo de flujo:
 
@@ -108,6 +108,10 @@ Los eventos `order.created`, `order.paid`, `invoice.accepted` y `complaint.creat
 
 ## SUNAT
 
+Modalidad **SEE – Del contribuyente** (RS 097-2012/SUNAT y modificatorias): el sistema arma el XML, lo firma y lo envía directamente a SUNAT, sin OSE. Para producción, el emisor se afilia a esta modalidad en SUNAT Operaciones en Línea, registra su certificado digital y crea un usuario SOL secundario para el envío; luego cambia `SUNAT_ENDPOINT` a `https://e-factura.sunat.gob.pe/ol-ti-itcpfegem/billService` y configura `SUNAT_CONSULT_ENDPOINT=https://e-factura.sunat.gob.pe/ol-it-wsconscpegem/billConsultService`.
+
+**Emisión automática** (`SUNAT_AUTO_ISSUE=true`): al confirmarse el pago, el comando `invoices:issue` (scheduler, cada minuto) crea la boleta o factura que el cliente eligió al comprar y la envía. Solo toma pedidos pagados en los últimos `SUNAT_AUTO_ISSUE_DAYS` días (no factura pedidos antiguos al activarla) y no actúa sin credenciales SUNAT, para no consumir correlativos que no se podrían enviar. Si los datos del pedido no permiten emitir, el pedido queda con el evento `INVOICE_AUTO_FAILED` y su motivo, y se emite desde el backoffice. La factura y sus notas tienen plazo hasta el día siguiente a la emisión (`SUNAT_FACTURA_SEND_MAX_DAYS=1`, RS 193-2020).
+
 Se conservan borradores UBL 2.1, firma XMLDSig RSA-SHA256 con PKCS#12, envío SOAP sendBill y lectura/persistencia de ZIP CDR. Configura SUNAT_RUC, SUNAT_LEGAL_NAME, SUNAT_SOL_USER, SUNAT_SOL_PASSWORD, SUNAT_CERTIFICATE_PATH y SUNAT_CERTIFICATE_PASSWORD. En Hostinger, guarda el certificado en `syscon/certificates/`, fuera de `public_html`, y configura SUNAT_CERTIFICATE_PATH con su ruta absoluta.
 
 Tipos: 01 factura, 03 boleta, 07 nota de crédito, 08 nota de débito. Las notas requieren un comprobante original ACCEPTED del mismo pedido. Estados: DRAFT, ACCEPTED, REJECTED, FAILED.
@@ -128,7 +132,7 @@ Archivos: `GET /api/invoices/{id}/{pdf|xml|cdr}` para administración (el PDF de
 
 **Series y correlativo.** El backend asigna `SERIE-NÚMERO` al crear el borrador, bloqueando la fila de `invoice_series` en la misma transacción: emisiones simultáneas reciben números distintos y, si la creación falla, el número no se consume (no hay saltos). Se usa la primera serie activa del tipo (o la indicada en `series`); facturas con F, boletas con B y las notas con la letra del comprobante que modifican. Series iniciales: F001 (01), B001 (03), FC01/BC01 (07), FD01/BD01 (08); la migración continúa las series ya usadas desde su número más alto. Para seguir una numeración de otro sistema registra la serie con `startAfter`. Un número asignado queda con su comprobante para siempre: un envío fallido se reintenta con el mismo número y un error en los datos del cliente se corrige con PATCH mientras está en borrador; después del envío la corrección es una nota. Volver a pedir la boleta o factura de un pedido devuelve la existente.
 
-**La implementación conserva el carácter experimental del backend anterior: no está homologada.** Faltan validaciones tributarias completas, catálogos, cálculo/desglose de impuestos, referencias y motivos completos de notas y pruebas oficiales. La prueba criptográfica valida la firma, no la aceptación tributaria. Los envíos con timeout deben conciliarse con SUNAT antes de reintentar; una respuesta perdida no significa que SUNAT no recibió el documento.
+**Alcance.** Cubre la venta interna (0101) gravada con IGV (afectación 10), al contado, en soles: factura con RUC validado (módulo 11), boleta con DNI/CE/pasaporte (anónima hasta S/ 700), notas de crédito 01, 02, 06, 07 y 09 y de débito 01, 02 y 03, forma de pago, leyenda del monto en letras y QR del Anexo B. No cubre operaciones exoneradas, inafectas o gratuitas (una línea con precio 0 se rechaza antes de emitir), ventas al crédito con cuotas, descuentos, detracciones, percepciones, ICBPER ni moneda extranjera. La prueba criptográfica valida la firma, no la aceptación tributaria. Los envíos con timeout deben conciliarse con SUNAT antes de reintentar; una respuesta perdida no significa que SUNAT no recibió el documento.
 
 ## Migración desde Java
 

@@ -2,6 +2,11 @@
 
 return [
     'jwt_secret' => env('JWT_SECRET', ''), 'service_token' => env('SERVICE_TOKEN', ''),
+    // Direcciones o redes (CIDR) desde donde se aceptan las rutas /internal/ además del X-Service-Token.
+    // Por defecto solo el mismo servidor; vacío desactiva la restricción por red.
+    'internal_allowed_ips' => array_values(array_filter(array_map('trim', explode(',', (string) env('INTERNAL_ALLOWED_IPS', '127.0.0.1,::1'))))),
+    // Días no laborables decretados que se suman a los feriados nacionales (Y-m-d, separados por comas).
+    'extra_holidays' => env('EXTRA_HOLIDAYS', ''),
     // Precios de referencia: comprobar que el dominio no apunte a una red interna (los tests lo apagan).
     'pricing_check_dns' => env('PRICING_CHECK_DNS', true),
     'supplier_hosts' => array_filter(array_map('trim', explode(',', strtolower(env('SUPPLIER_ALLOWED_HOSTS', ''))))),
@@ -42,8 +47,14 @@ return [
         // Consulta de CDR (getStatusCdr) para conciliar sin reenviar; SUNAT solo la ofrece en producción.
         'consult_endpoint' => env('SUNAT_CONSULT_ENDPOINT', ''),
         // Días calendario, desde el día siguiente a la emisión, para enviar a SUNAT (vacío: sin límite).
-        // Fijarlos con el plazo vigente: fuera de plazo SUNAT rechaza y la factura pierde su número.
-        'send_max_days' => ['F' => env('SUNAT_FACTURA_SEND_MAX_DAYS', ''), 'B' => env('SUNAT_BOLETA_SEND_MAX_DAYS', '')],
+        // Factura y sus notas (serie F): la fecha de emisión o hasta el día siguiente (RS 097-2012,
+        // art. 12.1 b, modificado por RS 193-2020). Fuera de plazo SUNAT rechaza y se pierde el número.
+        'send_max_days' => ['F' => env('SUNAT_FACTURA_SEND_MAX_DAYS', '1'), 'B' => env('SUNAT_BOLETA_SEND_MAX_DAYS', '')],
+        // Emisión automática: al confirmarse el pago se crea y envía la boleta o factura que el cliente
+        // eligió al comprar (comando invoices:issue, cada minuto). Solo pedidos pagados en los últimos
+        // auto_issue_days días, para no facturar pedidos antiguos al activarla.
+        'auto_issue' => (bool) env('SUNAT_AUTO_ISSUE', false),
+        'auto_issue_days' => (int) env('SUNAT_AUTO_ISSUE_DAYS', 1),
         // Domicilio fiscal que figura en la representación impresa.
         'address' => env('SUNAT_ADDRESS', ''),
     ],

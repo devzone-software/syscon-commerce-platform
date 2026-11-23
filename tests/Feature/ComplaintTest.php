@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Complaints\ComplaintService;
+use App\Support\PeruHolidays;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -76,5 +77,22 @@ class ComplaintTest extends TestCase
         $this->assertSame('2026-11-30', ComplaintService::dueOn(CarbonImmutable::parse('2026-11-09 10:00'))->toDateString());
         // Sábado 7/11/2026: el fin de semana no cuenta; el día hábil 15 es el viernes 27/11/2026.
         $this->assertSame('2026-11-27', ComplaintService::dueOn(CarbonImmutable::parse('2026-11-07 10:00'))->toDateString());
+    }
+
+    public function test_the_due_date_skips_national_holidays(): void
+    {
+        // Lunes 30/11/2026: el 8 y 9 de diciembre son feriados, así que el día hábil 15 es el 23/12 (no el 21/12).
+        $this->assertSame('2026-12-23', ComplaintService::dueOn(CarbonImmutable::parse('2026-11-30 10:00'))->toDateString());
+        // Semana Santa 2027 (Pascua 28/3): Jueves 25 y Viernes 26 de marzo no cuentan.
+        $this->assertTrue(PeruHolidays::isHoliday(CarbonImmutable::parse('2027-03-25')));
+        $this->assertTrue(PeruHolidays::isHoliday(CarbonImmutable::parse('2027-03-26')));
+        $this->assertFalse(PeruHolidays::isHoliday(CarbonImmutable::parse('2027-03-24')));
+        foreach ([2024 => '2024-03-31', 2025 => '2025-04-20', 2026 => '2026-04-05', 2030 => '2030-04-21', 2038 => '2038-04-25'] as $year => $easter) {
+            $this->assertSame($easter, PeruHolidays::easter($year)->format('Y-m-d'));
+        }
+        // Un día no laborable decretado se agrega por configuración.
+        $this->assertTrue(PeruHolidays::isBusinessDay(CarbonImmutable::parse('2026-12-24')));
+        config(['commerce.extra_holidays' => '2026-12-24, 2026-12-31']);
+        $this->assertFalse(PeruHolidays::isBusinessDay(CarbonImmutable::parse('2026-12-24')));
     }
 }

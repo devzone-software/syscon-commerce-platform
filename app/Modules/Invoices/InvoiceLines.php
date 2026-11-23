@@ -36,6 +36,11 @@ class InvoiceLines
         if (bccomp((string) ($order->delivery_cost ?? '0'), '0', 2) > 0) {
             $lines[] = $this->service('Servicio de envío a domicilio', bcadd((string) $order->delivery_cost, '0', 2), $rate);
         }
+        // Todo se declara como venta gravada (afectación 10); una línea sin precio sería una
+        // transferencia gratuita (afectación 11-16, otro tratamiento) y SUNAT la rechazaría.
+        foreach ($lines as $line) {
+            abort_if(bccomp((string) $line['line_total'], '0', 2) <= 0, 422, 'El pedido tiene productos con precio 0: las entregas gratuitas no se facturan como venta gravada');
+        }
 
         return $lines;
     }
