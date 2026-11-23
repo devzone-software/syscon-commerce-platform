@@ -7,6 +7,7 @@ use App\Modules\Invoices\InvoiceSubmission;
 use App\Modules\Invoices\InvoiceVoiding;
 use App\Modules\Notifications\Notifier;
 use App\Modules\Orders\OrderService;
+use App\Modules\Pricing\PricingService;
 use App\Modules\Suppliers\SupplierService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -26,7 +27,7 @@ Artisan::command('suppliers:sync', function (SupplierService $service) {
         }
     }
 })->purpose('Sincroniza feeds CSV de proveedores activos');
-Artisan::command('prices:check', function (App\Modules\Pricing\PricingService $pricing) {
+Artisan::command('prices:check', function (PricingService $pricing) {
     $counts = $pricing->refreshAll();
     $this->info("Leídos: {$counts['OK']} · Con error: {$counts['ERROR']}");
 })->purpose('Lee los precios de las empresas de referencia');

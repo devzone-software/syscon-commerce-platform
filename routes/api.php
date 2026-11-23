@@ -13,11 +13,11 @@ use App\Modules\Orders\SaleController;
 use App\Modules\Payments\MercadoPagoController;
 use App\Modules\Payments\PaymentController;
 use App\Modules\Payments\SandboxController;
+use App\Modules\Pricing\PricingController;
 use App\Modules\Reports\ReportController;
 use App\Modules\Suppliers\SupplierController;
 use App\Modules\Users\AuditController;
 use App\Modules\Users\UserController;
-use App\Modules\Pricing\PricingController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->controller(AuthController::class)->group(function () {

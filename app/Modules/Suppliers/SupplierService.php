@@ -87,7 +87,11 @@ class SupplierService
                     // El precio del feed es el costo del proveedor: no reemplaza el precio de venta ni
                     // la visibilidad de un producto existente, y llega como sugerencia a Precios de
                     // referencia. Un producto nuevo se crea oculto hasta que se apruebe su precio.
-                    $current = DB::table('products')->where('sku', $data['sku'])->first(['price', 'active']);
+                    // Una fila sin imageUrl conserva la imagen que el producto ya tenía.
+                    $current = DB::table('products')->where('sku', $data['sku'])->first(['price', 'active', 'image_url']);
+                    if ($current && $data['imageUrl'] === null) {
+                        $data['imageUrl'] = $current->image_url;
+                    }
                     $product = $this->catalog->upsert($current ? ['price' => (string) $current->price, 'active' => (bool) $current->active] + $data : ['active' => false] + $data);
                     $this->pricing->supplierPrice($id, $product['id'], $data['price']);
                     $existing = DB::table('supplier_products')->where('supplier_id', $id)->where('sku', $data['sku'])->first();

@@ -359,11 +359,12 @@ class CommerceTest extends TestCase
         config(['commerce.supplier_hosts' => ['feeds.example.com']]);
         $admin = $this->token('SUPERADMIN');
         $existing = $this->product(5, 'SUP-OLD');
+        DB::table('products')->where('id', $existing['id'])->update(['image_url' => 'https://img.example.com/old.png']);
         $s = $this->postJson('/api/suppliers', ['name' => 'Mayorista', 'feedUrl' => 'https://feeds.example.com/data.csv', 'minIntervalMinutes' => 15], $admin)->assertOk()->json('data');
         Http::fake(['feeds.example.com/*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nSUP-OLD;Producto & prueba;7.00;8;;SYSCON;Computación\nSUP-NEW;Nuevo;80.00;4;;;Computación\n", 200)]);
         $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertOk()->assertJsonPath('data.status', 'SUCCEEDED');
-        // El existente conserva su precio de venta y su visibilidad; el stock sí viene del feed.
-        $this->assertDatabaseHas('products', ['sku' => 'SUP-OLD', 'price' => '10.15', 'active' => true, 'stock' => 8]);
+        // El existente conserva su precio de venta, su visibilidad y su imagen (la fila no trae imageUrl); el stock sí viene del feed.
+        $this->assertDatabaseHas('products', ['sku' => 'SUP-OLD', 'price' => '10.15', 'active' => true, 'stock' => 8, 'image_url' => 'https://img.example.com/old.png']);
         // El nuevo queda oculto hasta aprobar su precio.
         $this->assertDatabaseHas('products', ['sku' => 'SUP-NEW', 'active' => false]);
         // Con margen de categoría, la sugerencia sale del costo del proveedor.
@@ -394,6 +395,20 @@ class CommerceTest extends TestCase
         Http::fake(['*' => Http::response("sku;name;price;stock;imageUrl;brand;category\nGOOD;Good;2.00;3;;;\nBAD;Bad;-1;1;;;\n", 200)]);
         $this->postJson('/api/suppliers/'.$s['id'].'/run', [], $admin)->assertOk()->assertJsonPath('data.status', 'FAILED');
         $this->assertDatabaseCount('products', 0);
+    }
+
+    public function test_legacy_pending_orders_without_expiration_get_one_and_release_stock(): void
+    {
+        $customer = $this->token();
+        $product = $this->product(5);
+        $order = $this->order($customer, $product);
+        // Pedido anterior al vencimiento de reservas: sin expires_at nunca vencía.
+        DB::table('orders')->where('id', $order['id'])->update(['expires_at' => null, 'created_at' => now()->subDays(30)]);
+        $this->assertSame(0, app(OrderService::class)->expireDue());
+        (require database_path('migrations/2026_11_23_000001_backfill_pending_order_expiration.php'))->up();
+        $this->assertSame(1, app(OrderService::class)->expireDue());
+        $this->assertDatabaseHas('orders', ['id' => $order['id'], 'status' => 'EXPIRED']);
+        $this->assertDatabaseHas('products', ['id' => $product['id'], 'reserved' => 0, 'stock' => 5]);
     }
 
     public function test_order_requires_valid_billing_and_keeps_a_copy(): void

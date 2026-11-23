@@ -62,6 +62,8 @@ return [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
+            // El servidor web (www-data) y los comandos por SSH comparten el grupo: ambos deben poder escribir.
+            'permission' => 0664,
             'replace_placeholders' => true,
         ],
 
@@ -69,6 +71,8 @@ return [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
+            // El servidor web (www-data) y los comandos por SSH comparten el grupo: ambos deben poder escribir.
+            'permission' => 0664,
             'max_files' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
         ],

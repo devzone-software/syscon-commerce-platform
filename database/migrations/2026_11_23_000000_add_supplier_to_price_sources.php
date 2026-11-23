@@ -21,8 +21,9 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('price_sources', function (Blueprint $t) {
-            $t->dropUnique(['supplier_id']);
+            // MySQL: la clave foránea antes que el índice único que la respalda.
             $t->dropForeign(['supplier_id']);
+            $t->dropUnique(['supplier_id']);
         });
         Schema::table('price_sources', fn (Blueprint $t) => $t->dropColumn('supplier_id'));
     }
